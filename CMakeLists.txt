@@ -100,6 +100,10 @@ endif()
 
 add_library(bromux STATIC ${BROMUX_SOURCES})
 add_library(bromux::bromux ALIAS bromux)
+# MSVC writes a static library's compiler PDB beside it as <target>.pdb, which
+# in Debug is the same file as the link PDB of the bromux executable
+# (OUTPUT_NAME bromux below): the link fails with LNK1201.
+set_target_properties(bromux PROPERTIES COMPILE_PDB_NAME bromux_lib)
 target_include_directories(bromux
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
