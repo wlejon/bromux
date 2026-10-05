@@ -51,7 +51,7 @@ struct Attachment {
     // What this client has been sent (the server's model of its ScreenModel).
     int sent_cols{-1};
     int sent_rows{-1};
-    std::vector<uint64_t> sent_hash;
+    std::vector<uint64_t> sent_key;  // ServerSession::row_key of each row it has
     bropty::CursorState sent_cursor{};
     bool cursor_sent{false};
     ModeState sent_modes{};
@@ -62,7 +62,9 @@ struct Attachment {
     bool text_sent{false};
     uint64_t sent_palette{0};
     bool palette_sent{false};
+    uint64_t sent_history_first{0};
     uint64_t sent_history{0};
+    uint64_t sent_epoch{0};
     bool history_sent{false};
     uint64_t sent_version{UINT64_MAX};  // session feed_seq the last frame showed
 
@@ -118,33 +120,35 @@ struct ServerSession final : bropty::TerminalHost {
     bool sync_active{false};      // ?2026 seen on, holding frames since sync_since
     Clock::time_point sync_since{};
 
-    // The screen as encoded rows, refreshed lazily from dirty bits.
+    // The screen as encoded rows, refreshed lazily. Rows are known by the
+    // terminal's row stamps (content serials: a row keeps its stamp while it
+    // scrolls), so an unchanged row is never re-encoded or compared.
     RowEncoder encoder;
     std::vector<std::string> row_enc;
-    std::vector<uint64_t> row_hash;
+    std::vector<uint64_t> row_stamp;  // Terminal::row_stamp of each row encoded
+    std::vector<uint64_t> row_key;    // what frames compare: the stamp, 0 = a blank row
+    std::string blank_enc;
     int enc_cols{-1};
     int enc_rows{-1};
-    bool enc_alt{false};
     uint64_t enc_version{UINT64_MAX};
-    uint64_t blank_hash{0};
     uint64_t palette_hash{0};
 
     std::vector<Attachment*> attachments;
 
+    // OSC 52 queries waiting for a client's ClipboardData; `request` is the
+    // terminal's id for the answer (Terminal::answer_clipboard).
     struct ClipRequest {
         uint32_t token{0};
+        uint64_t request{0};
         ConnId conn{0};
         Clock::time_point at{};
-        std::string selection;
     };
     std::vector<ClipRequest> clip_requests;
 
     [[nodiscard]] bropty::Terminal& t() noexcept { return term->terminal(); }
     [[nodiscard]] SessionInfo info() const;
-    // Feed PTY output (and record it).
-    void feed(std::string_view bytes);
     void resize(int cols, int rows);
-    // Bring row_enc / row_hash up to date with the terminal.
+    // Bring row_enc / row_key up to date with the terminal.
     void refresh();
     void push_event(EventMsg ev);
 
@@ -154,7 +158,7 @@ struct ServerSession final : bropty::TerminalHost {
     void icon_name_changed(std::string_view name) override;
     void cwd_changed(std::string_view uri) override;
     void clipboard_write(std::string_view selection, std::string_view data) override;
-    std::optional<std::string> clipboard_read(std::string_view selection) override;
+    bool clipboard_read_async(uint64_t request, std::string_view selection) override;
     void notification(std::string_view title, std::string_view body) override;
     void progress(int state, int value) override;
     void semantic_mark(char kind, std::string_view params) override;
@@ -240,7 +244,6 @@ private:
         std::shared_ptr<std::atomic<bool>> done;
     };
     std::vector<Reaper> reapers_;
-    std::unique_ptr<char[]> read_buf_;
 
 public:
     // Accessors used by the session and dispatch code.
@@ -250,7 +253,5 @@ public:
     size_t& blob_bytes() noexcept { return blob_bytes_; }
     uint64_t start_ms() const noexcept { return start_ms_; }
 };
-
-[[nodiscard]] std::string base64_encode(std::string_view data);
 
 }  // namespace bromux::detail

@@ -213,6 +213,45 @@ ScreenModel* Client::screen(uint64_t session) {
     return it == screens_.end() ? nullptr : it->second.get();
 }
 
+ScreenSource* Client::source(uint64_t session) {
+    auto mit = mirrors_.find(session);
+    if (mit != mirrors_.end()) return mit->second.source.get();
+    ScreenModel* m = screen(session);
+    if (!m) return nullptr;
+    // History requests go out without waiting; process() routes the answers.
+    auto fetch = [this, session](int64_t start, uint32_t count) -> uint32_t {
+        if (disconnect_reported_) return 0;
+        FetchHistoryMsg f;
+        f.req = next_req();
+        f.session = session;
+        f.start = uint64_t(start);
+        f.count = count;
+        history_reqs_[f.req] = session;
+        send(f);
+        return f.req;
+    };
+    Mirror& mr = mirrors_[session];
+    mr.source = std::make_unique<ScreenSource>(*m, std::move(fetch));
+    return mr.source.get();
+}
+
+bool Client::history_failed(uint32_t req) {
+    auto hit = history_reqs_.find(req);
+    if (hit == history_reqs_.end()) return false;
+    auto mit = mirrors_.find(hit->second);
+    if (mit != mirrors_.end()) mit->second.source->history_failed(req);
+    history_reqs_.erase(hit);
+    return true;
+}
+
+bropty::TerminalView* Client::view(uint64_t session) {
+    ScreenSource* s = source(session);
+    if (!s) return nullptr;
+    Mirror& mr = mirrors_[session];
+    if (!mr.view) mr.view = std::make_unique<bropty::TerminalView>(*s);
+    return mr.view.get();
+}
+
 size_t Client::dispatch(std::vector<ClientEvent>& out) {
     const size_t before = out.size();
     out.insert(out.end(), std::make_move_iterator(held_.begin()), std::make_move_iterator(held_.end()));
@@ -285,6 +324,8 @@ void Client::process(uint16_t type, std::string_view payload, std::vector<Client
         ack.session = f.session;
         ack.frame_seq = f.frame_seq;
         send(ack);
+        auto mit = mirrors_.find(f.session);
+        if (mit != mirrors_.end()) mit->second.source->frame_applied(e.effects);
         out.push_back(std::move(e));
         return;
     }
@@ -310,6 +351,7 @@ void Client::process(uint16_t type, std::string_view payload, std::vector<Client
     case MsgType::Detached: {
         DetachedMsg m;
         if (!decode(payload, m)) return malformed();
+        mirrors_.erase(m.session);
         screens_.erase(m.session);
         ClientEvent e;
         e.kind = ClientEvent::Kind::Detached;
@@ -333,6 +375,7 @@ void Client::process(uint16_t type, std::string_view payload, std::vector<Client
         AttachedMsg m;
         if (!decode(payload, m)) return malformed();
         // A fresh model: the server starts this attachment with a full frame.
+        mirrors_.erase(m.info.id);
         screens_[m.info.id] = std::make_unique<ScreenModel>();
         stash(m.req);
         return;
@@ -341,6 +384,7 @@ void Client::process(uint16_t type, std::string_view payload, std::vector<Client
         ErrorMsg m;
         if (!decode(payload, m)) return malformed();
         if (m.req && stash(m.req)) return;
+        if (m.req && history_failed(m.req)) return;
         ClientEvent e;
         e.kind = ClientEvent::Kind::Error;
         e.code = m.code;
@@ -348,10 +392,35 @@ void Client::process(uint16_t type, std::string_view payload, std::vector<Client
         out.push_back(std::move(e));
         return;
     }
+    case MsgType::History: {
+        wire::Reader r(payload);
+        const uint32_t req = r.u32();
+        if (!r.ok()) return malformed();
+        auto hit = history_reqs_.find(req);
+        if (hit == history_reqs_.end()) {
+            stash(req);  // fetch_history's
+            return;
+        }
+        const uint64_t session = hit->second;
+        history_reqs_.erase(hit);
+        auto mit = mirrors_.find(session);
+        if (mit == mirrors_.end()) return;  // the source went (detached) meanwhile
+        HistoryMsg h;
+        HistoryChunk chunk;
+        if (!decode(payload, h) || !decode_history(h, chunk)) {
+            mit->second.source->history_failed(req);
+            return malformed();
+        }
+        mit->second.source->history_arrived(req, chunk);
+        ClientEvent e;
+        e.kind = ClientEvent::Kind::History;
+        e.session = session;
+        out.push_back(std::move(e));
+        return;
+    }
     case MsgType::Ok:
     case MsgType::SessionList:
     case MsgType::SessionCreated:
-    case MsgType::History:
     case MsgType::Blob:
     case MsgType::SyncDone:
     case MsgType::Pong: {

@@ -23,17 +23,18 @@ uint64_t hash_palette(const bropty::Palette& p) {
     return wire::hash64(bytes);
 }
 
-// A whole-screen shift that turns `old` (what the client has) into more of
-// `cur` than it already matches: rows moving up k (k > 0) or down. Votes come
-// from rows whose content now sits elsewhere; rows whose hash occurs more
-// than once in `old` (blank lines) do not vote. Returns 0 when no shift pays.
+// A whole-screen shift that turns `old` (the row keys the client has) into
+// more of `cur` than it already matches: rows moving up k (k > 0) or down.
+// Votes come from rows whose content now sits elsewhere; keys that occur more
+// than once in `old` (blank rows, key 0) do not vote. Returns 0 when no shift
+// pays.
 int detect_scroll(const std::vector<uint64_t>& old, const std::vector<uint64_t>& cur) {
     const int n = int(cur.size());
     if (n < 3 || int(old.size()) != n) return 0;
     int differing = 0;
     for (int y = 0; y < n; ++y) differing += old[size_t(y)] != cur[size_t(y)];
     if (differing < 3) return 0;
-    std::unordered_map<uint64_t, int> where;  // hash -> row in old, -1 when ambiguous
+    std::unordered_map<uint64_t, int> where;  // key -> row in old, -1 when ambiguous
     where.reserve(size_t(n) * 2);
     for (int y = 0; y < n; ++y) {
         auto [it, inserted] = where.emplace(old[size_t(y)], y);
@@ -57,45 +58,69 @@ int detect_scroll(const std::vector<uint64_t>& old, const std::vector<uint64_t>&
     return best;
 }
 
-void shift_rows(std::vector<uint64_t>& rows, int k, uint64_t blank) {
+// The client's rows after Op_Scroll k: blank rows (key 0) shift in.
+void shift_rows(std::vector<uint64_t>& rows, int k) {
     const int n = int(rows.size());
     if (k >= n || -k >= n) {
-        std::fill(rows.begin(), rows.end(), blank);
+        std::fill(rows.begin(), rows.end(), 0);
     } else if (k > 0) {
         std::rotate(rows.begin(), rows.begin() + k, rows.end());
-        std::fill(rows.end() - k, rows.end(), blank);
+        std::fill(rows.end() - k, rows.end(), 0);
     } else if (k < 0) {
         std::rotate(rows.begin(), rows.end() + k, rows.end());
-        std::fill(rows.begin(), rows.begin() - k, blank);
+        std::fill(rows.begin(), rows.begin() - k, 0);
     }
 }
 
 }  // namespace
 
+// Row stamps are content serials across both screens and resizes: a row
+// whose stamp was encoded before (wherever it sat) has that encoding still.
+// Only rows with new stamps are encoded; advance_generation() then makes the
+// next change to any row take a stamp not seen here.
 void ServerSession::refresh() {
     if (enc_version == feed_seq) return;
     static const bool full_always = std::getenv("BROMUX_FULL_REFRESH") != nullptr;
     bropty::Terminal& term_ref = t();
     const int cols = term_ref.cols();
     const int rows = term_ref.rows();
-    const bool alt = term_ref.alt_screen_active();
-    const bool full = full_always || cols != enc_cols || rows != enc_rows || alt != enc_alt;
-    if (cols != enc_cols || rows != enc_rows) {
-        row_enc.assign(size_t(rows), std::string());
-        row_hash.assign(size_t(rows), 0);
-        enc_cols = cols;
-        enc_rows = rows;
-        blank_hash = wire::hash64(encode_blank_row(cols));
-    }
-    enc_alt = alt;
+    if (cols != enc_cols) blank_enc = encode_blank_row(cols);
+    enc_cols = cols;
+    enc_rows = rows;
+    std::vector<std::string> enc(static_cast<size_t>(rows));
+    std::vector<uint64_t> stamps(static_cast<size_t>(rows));
+    std::unordered_map<uint64_t, size_t> was;  // stamp -> old row, built when a row moved
+    bool indexed = false;
     for (int y = 0; y < rows; ++y) {
-        if (!full && !term_ref.row_dirty(y)) continue;
-        std::string& e = row_enc[size_t(y)];
-        e.clear();
-        encoder.encode(e, term_ref.row(y), term_ref);
-        row_hash[size_t(y)] = wire::hash64(e);
+        const size_t i = size_t(y);
+        const uint64_t st = term_ref.row_stamp(y);
+        stamps[i] = st;
+        size_t from = SIZE_MAX;
+        if (!full_always) {
+            if (i < row_stamp.size() && row_stamp[i] == st) {
+                from = i;
+            } else {
+                if (!indexed) {
+                    was.reserve(row_stamp.size() * 2);
+                    for (size_t j = 0; j < row_stamp.size(); ++j) was.emplace(row_stamp[j], j);
+                    indexed = true;
+                }
+                auto it = was.find(st);
+                if (it != was.end()) from = it->second;
+            }
+        }
+        if (from == i)
+            enc[i] = std::move(row_enc[i]);  // stamps are unique on a screen: nothing else maps here
+        else if (from != SIZE_MAX)
+            enc[i] = row_enc[from];
+        else
+            encoder.encode(enc[i], term_ref.row(y), term_ref);
     }
-    term_ref.clear_dirty();
+    term_ref.advance_generation();
+    row_enc = std::move(enc);
+    row_stamp = std::move(stamps);
+    row_key.resize(size_t(rows));
+    for (size_t i = 0; i < size_t(rows); ++i) row_key[i] = row_enc[i] == blank_enc ? 0 : row_stamp[i];
     palette_hash = hash_palette(term_ref.palette());
     enc_version = feed_seq;
 }
@@ -113,19 +138,19 @@ bool ServerCore::send_frame(Attachment& a, Clock::time_point now) {
         w.varint(uint64_t(s.enc_rows));
         a.sent_cols = s.enc_cols;
         a.sent_rows = s.enc_rows;
-        a.sent_hash.assign(size_t(s.enc_rows), s.blank_hash);
+        a.sent_key.assign(size_t(s.enc_rows), 0);  // a resized model is blank
     }
-    if (int k = detect_scroll(a.sent_hash, s.row_hash)) {
+    if (int k = detect_scroll(a.sent_key, s.row_key)) {
         w.u8(Op_Scroll);
         w.svarint(k);
-        shift_rows(a.sent_hash, k, s.blank_hash);
+        shift_rows(a.sent_key, k);
     }
     for (int y = 0; y < s.enc_rows; ++y) {
-        if (a.sent_hash[size_t(y)] == s.row_hash[size_t(y)]) continue;
+        if (a.sent_key[size_t(y)] == s.row_key[size_t(y)]) continue;
         w.u8(Op_Row);
         w.varint(uint64_t(y));
         w.raw(s.row_enc[size_t(y)]);
-        a.sent_hash[size_t(y)] = s.row_hash[size_t(y)];
+        a.sent_key[size_t(y)] = s.row_key[size_t(y)];
     }
     const bropty::CursorState cur = t.cursor();
     if (!a.cursor_sent || !same_cursor(cur, a.sent_cursor)) {
@@ -164,11 +189,18 @@ bool ServerCore::send_frame(Attachment& a, Clock::time_point now) {
         a.sent_palette = s.palette_hash;
         a.palette_sent = true;
     }
-    const uint64_t hist = t.history_rows();
-    if (!a.history_sent || hist != a.sent_history) {
+    const uint64_t hfirst = uint64_t(t.history_first_row());
+    const uint64_t hrows = t.history_rows();
+    const uint64_t epoch = t.row_numbering();
+    if (!a.history_sent || hfirst != a.sent_history_first || hrows != a.sent_history ||
+        epoch != a.sent_epoch) {
         w.u8(Op_History);
-        w.varint(hist);
-        a.sent_history = hist;
+        w.varint(hfirst);
+        w.varint(hrows);
+        w.varint(epoch);
+        a.sent_history_first = hfirst;
+        a.sent_history = hrows;
+        a.sent_epoch = epoch;
         a.history_sent = true;
     }
 
@@ -219,11 +251,17 @@ void ServerCore::send_history(Conn& c, const FetchHistoryMsg& m) {
     r.req = m.req;
     r.session = s.id;
     r.feed_seq = s.feed_seq;
+    r.first_row = uint64_t(t.history_first_row());
     r.history_rows = t.history_rows();
-    r.start = std::min<uint64_t>(m.start, r.history_rows);
-    const uint64_t n = std::min<uint64_t>({uint64_t(m.count), r.history_rows - r.start, kMaxHistoryRows});
+    r.epoch = t.row_numbering();
+    // Absolute rows, clamped to what is held: evicted rows are gone, and the
+    // screen is not history.
+    const uint64_t end = r.first_row + r.history_rows;
+    r.start = std::clamp<uint64_t>(m.start, r.first_row, end);
+    const uint64_t n = std::min<uint64_t>({uint64_t(m.count), end - r.start, kMaxHistoryRows});
     r.rows.resize(size_t(n));
-    for (uint64_t i = 0; i < n; ++i) s.encoder.encode(r.rows[size_t(i)], t.history_row(size_t(r.start + i)), t);
+    for (uint64_t i = 0; i < n; ++i)
+        s.encoder.encode(r.rows[size_t(i)], t.history_row(size_t(r.start - r.first_row + i)), t);
     send(c, r);
 }
 

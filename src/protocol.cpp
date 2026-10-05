@@ -338,7 +338,9 @@ void HistoryMsg::write(wire::Writer& w) const {
     w.u32(req);
     w.u64(session);
     w.u64(feed_seq);
+    w.u64(first_row);
     w.u64(history_rows);
+    w.u64(epoch);
     w.u64(start);
     w.strings(rows);
 }
@@ -346,7 +348,9 @@ void HistoryMsg::read(wire::Reader& r) {
     req = r.u32();
     session = r.u64();
     feed_seq = r.u64();
+    first_row = r.u64();
     history_rows = r.u64();
+    epoch = r.u64();
     start = r.u64();
     rows = r.strings();
 }

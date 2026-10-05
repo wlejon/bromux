@@ -24,10 +24,7 @@ constexpr size_t kReadChunk = 64u << 10;
 constexpr auto kClipboardTimeout = std::chrono::seconds(10);
 }  // namespace
 
-ServerCore::ServerCore(ServerOptions options) : opt_(std::move(options)) {
-    read_buf_ = std::make_unique<char[]>(kReadChunk);
-    start_ms_ = unix_time_ms();
-}
+ServerCore::ServerCore(ServerOptions options) : opt_(std::move(options)) { start_ms_ = unix_time_ms(); }
 
 ServerCore::~ServerCore() {
     if (loop_) shutdown();
@@ -122,29 +119,21 @@ void ServerCore::reap(std::shared_ptr<bropty::IPtyProcess> pty) {
 }
 
 // Give every session with output a bounded slice (bytes and time) per turn,
-// so one flooding session cannot starve the rest or the clients' I/O.
+// so one flooding session cannot starve the rest or the clients' I/O. The
+// Session reads and feeds; its feed tap (create_session) counts and records
+// each chunk.
 void ServerCore::pump_sessions() {
     std::vector<ServerSession*> exited;
+    bropty::Session::UpdateBudget budget;
+    budget.max_bytes = opt_.session_slice_bytes;
+    budget.max_time = opt_.session_slice_time;
+    budget.slice = kReadChunk;
     for (auto& [id, sp] : sessions_) {
         ServerSession& s = *sp;
         s.has_pending = false;
         if (!s.pty) continue;
-        // Moves a pending paste on without reading output (a zero-byte budget).
-        bropty::Session::UpdateBudget flush_only;
-        flush_only.max_bytes = 0;
-        s.term->update(flush_only);
-
-        const auto deadline = Clock::now() + opt_.session_slice_time;
-        size_t total = 0;
-        while (total < opt_.session_slice_bytes) {
-            const size_t want = std::min(kReadChunk, opt_.session_slice_bytes - total);
-            const size_t n = s.pty->read_nonblocking(read_buf_.get(), want);
-            if (n == 0) break;
-            s.feed(std::string_view(read_buf_.get(), n));
-            total += n;
-            if (Clock::now() >= deadline) break;
-        }
-        s.has_pending = s.pty->available() > 0;
+        s.term->update(budget);
+        s.has_pending = s.term->has_pending_output();
         if (s.running && !s.has_pending && !s.pty->is_running() && s.pty->eof()) exited.push_back(&s);
     }
     for (auto& [id, sp] : sessions_) sp->tee.flush();
@@ -154,9 +143,14 @@ void ServerCore::pump_sessions() {
 void ServerCore::expire_clipboard_requests(Clock::time_point now) {
     for (auto& [id, s] : sessions_) {
         auto& v = s->clip_requests;
-        v.erase(std::remove_if(v.begin(), v.end(),
-                               [now](const ServerSession::ClipRequest& r) { return now - r.at > kClipboardTimeout; }),
-                v.end());
+        for (auto it = v.begin(); it != v.end();) {
+            if (now - it->at > kClipboardTimeout) {
+                s->t().cancel_clipboard(it->request);
+                it = v.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
 }
 

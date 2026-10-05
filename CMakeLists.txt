@@ -40,6 +40,7 @@ set(BROMUX_SOURCES
     src/protocol_input.cpp
     src/row_codec.cpp
     src/screen_model.cpp
+    src/screen_source.cpp
     src/client.cpp
     src/client_requests.cpp
     src/tee.cpp

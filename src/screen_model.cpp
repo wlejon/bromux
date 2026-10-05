@@ -15,6 +15,7 @@ void ScreenModel::reset() {
     cols_ = 0;
     rows_.clear();
     dirty_.clear();
+    serials_.clear();  // next_serial_ goes on: serials are never reused
     pool_.clear();
     compact_threshold_ = 4096;
     cursor_ = bropty::CursorState{};
@@ -24,6 +25,8 @@ void ScreenModel::reset() {
     cwd_.clear();
     palette_ = bropty::Palette::standard();
     history_rows_ = 0;
+    history_first_ = 0;
+    epoch_ = 0;
     feed_seq_ = 0;
     frame_seq_ = 0;
 }
@@ -35,19 +38,27 @@ void ScreenModel::resize_blank(int cols, int rows) {
     rows_.resize(size_t(rows));
     for (ModelRow& r : rows_) r.reset(cols);
     dirty_.assign(size_t(rows), uint8_t(1));
+    serials_.resize(size_t(rows));
+    for (uint64_t& s : serials_) s = ++next_serial_;
 }
 
 void ScreenModel::scroll(int k) {
     const int n = rows();
     if (k == 0 || n == 0) return;
+    auto blank = [this](int y) {
+        rows_[size_t(y)].reset(cols_);
+        serials_[size_t(y)] = ++next_serial_;
+    };
     if (k >= n || -k >= n) {
-        for (ModelRow& r : rows_) r.reset(cols_);
+        for (int y = 0; y < n; ++y) blank(y);
     } else if (k > 0) {
         std::rotate(rows_.begin(), rows_.begin() + k, rows_.end());
-        for (int y = n - k; y < n; ++y) rows_[size_t(y)].reset(cols_);
+        std::rotate(serials_.begin(), serials_.begin() + k, serials_.end());
+        for (int y = n - k; y < n; ++y) blank(y);
     } else {
         std::rotate(rows_.begin(), rows_.end() + k, rows_.end());
-        for (int y = 0; y < -k; ++y) rows_[size_t(y)].reset(cols_);
+        std::rotate(serials_.begin(), serials_.end() + k, serials_.end());
+        for (int y = 0; y < -k; ++y) blank(y);
     }
     std::fill(dirty_.begin(), dirty_.end(), uint8_t(1));
 }
@@ -86,6 +97,7 @@ bool ScreenModel::apply(const FrameMsg& frame, std::string* err, Effects* fx) {
             if (!decode_row(r, row, pool_)) return bad("bad row encoding");
             if (int(row.cells.size()) != cols_) return bad("row width differs from the screen");
             dirty_[size_t(y)] = 1;
+            serials_[size_t(y)] = ++next_serial_;
             ++e.rows_changed;
             break;
         }
@@ -135,11 +147,18 @@ bool ScreenModel::apply(const FrameMsg& frame, std::string* err, Effects* fx) {
             if (!read_palette(r, palette_)) return bad("bad palette op");
             e.palette = true;
             break;
-        case Op_History:
-            history_rows_ = r.varint();
+        case Op_History: {
+            const uint64_t first = r.varint_max(uint64_t(INT64_MAX) / 2);
+            const uint64_t n = r.varint_max(uint64_t(INT64_MAX) / 2);
+            const uint64_t epoch = r.varint();
             if (!r.ok()) return bad("bad history op");
+            history_first_ = int64_t(first);
+            history_rows_ = n;
+            e.epoch = epoch != epoch_;
+            epoch_ = epoch;
             e.history = true;
             break;
+        }
         default:
             return bad("unknown frame op");
         }

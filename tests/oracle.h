@@ -84,18 +84,30 @@ inline std::string compare_screen(const bromux::ScreenModel& m, const bropty::Te
         return "palette differs";
     if (m.history_rows() != t.history_rows())
         return "history rows " + std::to_string(m.history_rows()) + " vs " + std::to_string(t.history_rows());
+    if (m.history_first_row() != t.history_first_row())
+        return "history first row " + std::to_string(m.history_first_row()) + " vs " +
+               std::to_string(t.history_first_row());
+    if (m.history_epoch() != t.row_numbering()) return "row numbering differs";
+    if (m.screen_top_row() != t.screen_top_row()) return "screen top row differs";
+    if (m.alt_screen_active() != t.alt_screen_active()) return "alternate screen differs";
     return {};
 }
 
+// History rows are absolute: chunk row i is terminal row h.start + i.
 inline std::string compare_history(const bromux::HistoryChunk& h, const bropty::Terminal& t) {
     if (h.history_rows != t.history_rows())
         return "history rows " + std::to_string(h.history_rows) + " vs " + std::to_string(t.history_rows());
+    if (h.first_row != t.history_first_row())
+        return "history first row " + std::to_string(h.first_row) + " vs " + std::to_string(t.history_first_row());
+    if (h.epoch != t.row_numbering()) return "row numbering differs";
+    if (h.start < h.first_row || h.start + int64_t(h.rows.size()) > t.screen_top_row())
+        return "rows " + std::to_string(h.start) + " +" + std::to_string(h.rows.size()) + " outside history";
     for (size_t i = 0; i < h.rows.size(); ++i) {
-        const size_t idx = size_t(h.start + i);
+        const int64_t abs = h.start + int64_t(i);
         std::string d = compare_row(
-            h.row(i), t.history_row(idx), [&](uint32_t id) { return model_link(h.styles, id); },
+            h.row(i), t.history_row(size_t(abs - h.first_row)), [&](uint32_t id) { return model_link(h.styles, id); },
             [&](uint32_t id) { return term_link(t, id); });
-        if (!d.empty()) return "history row " + std::to_string(idx) + ": " + d;
+        if (!d.empty()) return "history row " + std::to_string(abs) + ": " + d;
     }
     return {};
 }

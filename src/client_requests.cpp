@@ -177,17 +177,7 @@ std::optional<HistoryChunk> Client::fetch_history(uint64_t session, uint64_t sta
         return std::nullopt;
     }
     HistoryChunk out;
-    out.feed_seq = h.feed_seq;
-    out.history_rows = h.history_rows;
-    out.start = h.start;
-    out.rows.resize(h.rows.size());
-    for (size_t i = 0; i < h.rows.size(); ++i) {
-        wire::Reader rr(h.rows[i]);
-        if (!decode_row(rr, out.rows[i], out.styles)) {
-            if (err) *err = "bad history row";
-            return std::nullopt;
-        }
-    }
+    if (!decode_history(h, out, err)) return std::nullopt;
     return out;
 }
 

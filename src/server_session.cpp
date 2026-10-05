@@ -13,29 +13,6 @@ constexpr uint32_t kMaxScrollback = 1000000;
 constexpr size_t kMaxEventBytes = 16u << 20;
 }  // namespace
 
-std::string base64_encode(std::string_view data) {
-    static const char* tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    out.reserve((data.size() + 2) / 3 * 4);
-    size_t i = 0;
-    for (; i + 3 <= data.size(); i += 3) {
-        uint32_t v = (uint32_t(uint8_t(data[i])) << 16) | (uint32_t(uint8_t(data[i + 1])) << 8) | uint8_t(data[i + 2]);
-        out.push_back(tbl[(v >> 18) & 63]);
-        out.push_back(tbl[(v >> 12) & 63]);
-        out.push_back(tbl[(v >> 6) & 63]);
-        out.push_back(tbl[v & 63]);
-    }
-    if (i < data.size()) {
-        uint32_t v = uint32_t(uint8_t(data[i])) << 16;
-        if (i + 1 < data.size()) v |= uint32_t(uint8_t(data[i + 1])) << 8;
-        out.push_back(tbl[(v >> 18) & 63]);
-        out.push_back(tbl[(v >> 12) & 63]);
-        out.push_back(i + 1 < data.size() ? tbl[(v >> 6) & 63] : '=');
-        out.push_back('=');
-    }
-    return out;
-}
-
 // ---- ServerSession ----------------------------------------------------------------
 
 SessionInfo ServerSession::info() const {
@@ -56,12 +33,6 @@ SessionInfo ServerSession::info() const {
     i.resize_policy = resize_policy;
     i.clipboard_policy = clipboard_policy;
     return i;
-}
-
-void ServerSession::feed(std::string_view bytes) {
-    ++feed_seq;
-    tee.data(bytes);
-    term->feed(bytes);
 }
 
 void ServerSession::resize(int cols, int rows) {
@@ -130,25 +101,27 @@ void ServerSession::clipboard_write(std::string_view selection, std::string_view
 
 // OSC 52 queries are answered asynchronously: the most recently active
 // client that may type into the session is asked (ClipboardRequest), and its
-// ClipboardData reply is written to the program as the OSC 52 answer.
-std::optional<std::string> ServerSession::clipboard_read(std::string_view selection) {
-    if (clipboard_policy != ClipboardPolicy::ReadWrite) return std::nullopt;
+// ClipboardData reply answers the terminal's request (server_dispatch.cpp),
+// which writes the OSC 52 reply. Declined (false): no client may answer, and
+// the program gets no reply.
+bool ServerSession::clipboard_read_async(uint64_t request, std::string_view selection) {
+    if (clipboard_policy != ClipboardPolicy::ReadWrite) return false;
     Attachment* best = nullptr;
     for (Attachment* a : attachments)
         if (!a->read_only() && (!best || a->activity > best->activity)) best = a;
-    if (!best) return std::nullopt;
+    if (!best) return false;
     ClipRequest r;
     r.token = core.next_token();
+    r.request = request;
     r.conn = best->conn->id;
     r.at = Clock::now();
-    r.selection = selection.empty() ? std::string("s0") : std::string(selection);
     ClipboardRequestMsg m;
     m.session = id;
     m.token = r.token;
-    m.selection = r.selection;
-    clip_requests.push_back(std::move(r));
+    m.selection = selection.empty() ? std::string("s0") : std::string(selection);
+    clip_requests.push_back(r);
     core.send(*best->conn, m);
-    return std::nullopt;
+    return true;
 }
 
 void ServerSession::notification(std::string_view title, std::string_view body) {
@@ -207,6 +180,12 @@ ServerSession* ServerCore::create_session(const SessionSpec& spec, std::string& 
     to.scrollback_rows = std::min(spec.scrollback_rows, kMaxScrollback);
     s->term = std::make_unique<bropty::Session>(to);
     s->term->set_delegate(s.get());
+    // Every chunk of output the Session feeds is a new state version, and
+    // goes to the tee before the terminal sees it.
+    s->term->set_feed_tap([sp = s.get()](std::string_view bytes) {
+        ++sp->feed_seq;
+        sp->tee.data(bytes);
+    });
 
     bropty::PtyConfig pc;
     pc.command = spec.command;

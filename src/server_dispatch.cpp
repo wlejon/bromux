@@ -320,10 +320,13 @@ void ServerCore::handle(Conn& c, uint16_t type, std::string_view payload) {
         auto it = std::find_if(reqs.begin(), reqs.end(),
                                [&](const ServerSession::ClipRequest& r) { return r.token == m.token && r.conn == c.id; });
         if (it == reqs.end()) return;
-        const std::string sel = it->selection;
+        const uint64_t request = it->request;
         reqs.erase(it);
-        if (m.ok && s->pty && s->clipboard_policy == ClipboardPolicy::ReadWrite)
-            s->term->write_to_pty("\x1b]52;" + sel + ";" + base64_encode(m.data) + "\x1b\\");
+        // The terminal writes the reply, terminated as the query was.
+        if (m.ok && s->clipboard_policy == ClipboardPolicy::ReadWrite)
+            s->t().answer_clipboard(request, m.data);
+        else
+            s->t().cancel_clipboard(request);
         return;
     }
     case MsgType::Sync: {

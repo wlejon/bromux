@@ -226,7 +226,7 @@ void test_cli() {
     out = run_capture({g_bromux, "ls", "-L", name});
     CHECK_MSG(out.find("clisession") == std::string::npos, out);
     out = run_capture({g_bromux, "version"});
-    CHECK(out.find("protocol 1.") != std::string::npos);
+    CHECK(out.find("protocol " + std::to_string(kProtocolMajor) + ".") != std::string::npos);
     run_capture({g_bromux, "kill-server", "-L", name});
     CHECK(wait_unreachable(name, 10s));
     cleanup_log(name);

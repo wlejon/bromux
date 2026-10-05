@@ -3,8 +3,10 @@
 // Frame messages. It holds what a renderer reads -- rows of bropty cells
 // (row(y) is a bropty::RowView, so code written for a local bropty Terminal
 // renders a muxed session unchanged), the cursor, modes, title / icon / cwd,
-// the palette -- plus the history row count (rows themselves are fetched on
-// demand, see Client::fetch_history).
+// the palette -- plus where history is in absolute row numbers (rows
+// themselves are fetched on demand: Client::fetch_history, or a
+// ScreenSource, which serves this model with its history to bropty's
+// selection, search, links and TerminalView).
 //
 // Single-threaded: owned by whoever calls Client::dispatch().
 
@@ -38,7 +40,19 @@ public:
     [[nodiscard]] const std::string& icon_name() const noexcept { return icon_; }
     [[nodiscard]] const std::string& cwd() const noexcept { return cwd_; }
     [[nodiscard]] const bropty::Palette& palette() const noexcept { return palette_; }
+    [[nodiscard]] bool alt_screen_active() const noexcept { return modes_.has(Mode_AltScreen); }
+    // History (Op_History): absolute rows history_first_row() ..
+    // screen_top_row() - 1; the screen's rows follow. Numbers hold while
+    // history_epoch() stays the same (bropty::Terminal::row_numbering()).
     [[nodiscard]] uint64_t history_rows() const noexcept { return history_rows_; }
+    [[nodiscard]] int64_t history_first_row() const noexcept { return history_first_; }
+    [[nodiscard]] int64_t screen_top_row() const noexcept { return history_first_ + int64_t(history_rows_); }
+    [[nodiscard]] uint64_t history_epoch() const noexcept { return epoch_; }
+
+    // A content serial per screen row: a new one whenever a frame writes the
+    // row (or a resize / scroll blanks it); it moves with the row when the
+    // screen scrolls. Equal serials mean equal content, for this model's life.
+    [[nodiscard]] uint64_t row_serial(int y) const noexcept { return serials_[size_t(y)]; }
 
     // Version of the session state this model shows (FrameMsg::feed_seq) and
     // the last frame applied.
@@ -58,6 +72,7 @@ public:
         bool cwd{false};
         bool palette{false};
         bool history{false};
+        bool epoch{false};  // rows were renumbered (a resize's reflow)
         int rows_changed{0};
         int scrolled{0};  // net rows scrolled up
     };
@@ -75,6 +90,8 @@ private:
     int cols_{0};
     std::vector<ModelRow> rows_;
     std::vector<uint8_t> dirty_;
+    std::vector<uint64_t> serials_;
+    uint64_t next_serial_{0};
     StylePool pool_;
     size_t compact_threshold_{4096};
     bropty::CursorState cursor_{};
@@ -84,6 +101,8 @@ private:
     std::string cwd_;
     bropty::Palette palette_;
     uint64_t history_rows_{0};
+    int64_t history_first_{0};
+    uint64_t epoch_{0};
     uint64_t feed_seq_{0};
     uint64_t frame_seq_{0};
 };

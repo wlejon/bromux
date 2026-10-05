@@ -4,13 +4,15 @@
 //   lines N [DELAY_MS]            N numbered lines, then hold
 //   echo                          raw mode; report each input chunk as [escaped]; 'q' quits
 //   osc                           on a key: title / cwd / bell / notification / OSC 133 / OSC 52 / link
-//   clipread                      raw mode; on a key, an OSC 52 query; prints the answer as GOT:<base64>
+//   clipread                      raw mode; key b / s: an OSC 52 query ending in BEL / ST; prints
+//                                 each answer as GOT:<base64> BEL|ST
 //   size                          print SIZE cols rows now and whenever input arrives
 //   exit CODE                     print bye and exit with CODE
 // "hold" = wait for input to end (the session closing).
 #include "no_dialogs.h"
 #include "vtgen.h"
 
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -214,20 +216,31 @@ int main(int argc, char** argv) {
     if (mode == "clipread") {
         setup_console(true);
         out("CLIP READY\r\n");
+        // Key b / s: an OSC 52 query terminated by BEL / ST. Input starting
+        // with ESC is an answer: printed as GOT:<base64> BEL|ST.
+        std::string pending;
         char buf[1024];
-        if (in(buf, sizeof buf) == 0) return 1;  // a key starts the query
-        out("\x1b]52;c;?\x07");
-        std::string got;
-        while (got.find('\x07') == std::string::npos && got.find("\x1b\\") == std::string::npos) {
-            size_t n = in(buf, sizeof buf);
-            if (n == 0) return 1;
-            got.append(buf, n);
+        for (;;) {
+            if (pending.empty() || pending[0] == '\x1b') {
+                const size_t bel = pending.find('\x07');
+                const size_t st = pending.find("\x1b\\", 1);
+                const size_t end = std::min(bel, st);
+                if (pending.empty() || end == std::string::npos) {
+                    size_t n = in(buf, sizeof buf);
+                    if (n == 0) return 0;
+                    pending.append(buf, n);
+                    continue;
+                }
+                const size_t semi = pending.rfind(';', end);
+                out("GOT:" + pending.substr(semi + 1, end - semi - 1) + (end == bel ? " BEL" : " ST") + "\r\n");
+                pending.erase(0, end + (end == bel ? 1 : 2));
+                continue;
+            }
+            const char k = pending[0];
+            pending.erase(0, 1);
+            if (k == 'b') out("\x1b]52;c;?\x07");
+            if (k == 's') out("\x1b]52;c;?\x1b\\");
         }
-        size_t semi = got.rfind(';');
-        size_t end = got.find_first_of("\x07\x1b", semi);
-        out("GOT:" + got.substr(semi + 1, end - semi - 1) + "\r\n");
-        hold();
-        return 0;
     }
     if (mode == "size") {
         setup_console(true);

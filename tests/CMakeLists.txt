@@ -29,6 +29,7 @@ set_tests_properties(process_census_after PROPERTIES FIXTURES_CLEANUP process_ce
 
 bromux_test(test_wire)
 bromux_test(test_codec)
+bromux_test(test_source)
 
 # Helpers the end-to-end tests run: a session program that behaves the same
 # on every platform, and a client process to kill mid-stream.

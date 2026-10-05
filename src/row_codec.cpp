@@ -69,6 +69,37 @@ ModeState mode_state_from(const bropty::Terminal& t) noexcept {
     return s;
 }
 
+bropty::Modes modes_from(const ModeState& s) noexcept {
+    bropty::Modes m;
+    m.insert = s.has(Mode_Insert);
+    m.linefeed_newline = s.has(Mode_LinefeedNewline);
+    m.app_cursor_keys = s.has(Mode_AppCursorKeys);
+    m.reverse_video = s.has(Mode_ReverseVideo);
+    m.origin = s.has(Mode_Origin);
+    m.autowrap = s.has(Mode_Autowrap);
+    m.cursor_blink = s.has(Mode_CursorBlink);
+    m.cursor_visible = s.has(Mode_CursorVisible);
+    m.reverse_wrap = s.has(Mode_ReverseWrap);
+    m.app_keypad = s.has(Mode_AppKeypad);
+    m.backarrow_sends_bs = s.has(Mode_BackarrowSendsBs);
+    m.left_right_margins = s.has(Mode_LeftRightMargins);
+    m.focus_events = s.has(Mode_FocusEvents);
+    m.alternate_scroll = s.has(Mode_AlternateScroll);
+    m.meta_sends_escape = s.has(Mode_MetaSendsEscape);
+    m.alt_sends_escape = s.has(Mode_AltSendsEscape);
+    m.bracketed_paste = s.has(Mode_BracketedPaste);
+    m.synchronized_output = s.has(Mode_SynchronizedOutput);
+    m.grapheme_clustering = s.has(Mode_GraphemeClustering);
+    m.color_scheme_updates = s.has(Mode_ColorSchemeUpdates);
+    m.in_band_resize = s.has(Mode_InBandResize);
+    m.allow_deccolm = s.has(Mode_AllowDeccolm);
+    m.deccolm = s.has(Mode_Deccolm);
+    m.deccolm_no_clear = s.has(Mode_DeccolmNoClear);
+    m.mouse_tracking = s.mouse_tracking;
+    m.mouse_encoding = s.mouse_encoding;
+    return m;
+}
+
 void RowEncoder::encode(std::string& out, const bropty::RowView& row, const bropty::Terminal& term) {
     wire::Writer w(out);
     const int cols = row.cells ? row.cols : 0;

@@ -14,8 +14,7 @@
 //                        when the cluster bit is set: varint n, n varint code points
 //                        (the cluster's tail)
 // The runs cover exactly `cols` cells. Styles are a row-local palette in
-// order of first use, so equal rows encode to equal bytes (the server
-// compares rows by hashing their encodings).
+// order of first use, so equal rows encode to equal bytes.
 //
 // The Frame op stream (FrameMsg::ops) is a sequence of
 //     u8 op, body
@@ -43,7 +42,12 @@ enum FrameOp : uint8_t {
     Op_Modes = 5,    // varint mode bits, u8 mouse tracking, u8 mouse encoding, varint kitty flags
     Op_Text = 6,     // u8 which (0 title, 1 icon name, 2 cwd), str value
     Op_Palette = 7,  // 259 x (r, g, b): colors[0..255], foreground, background, cursor
-    Op_History = 8,  // varint history rows held
+    // varint first row, varint history rows held, varint epoch: history is
+    // absolute rows first .. first + rows - 1, the screen starts at first +
+    // rows (also on the alternate screen, which shows no history). A row
+    // keeps its number while epoch stays the same; a resize (the reflow)
+    // starts a new epoch.
+    Op_History = 8,
 };
 
 enum ModeBit : uint64_t {
@@ -87,6 +91,9 @@ struct ModeState {
     bool operator==(const ModeState&) const noexcept = default;
 };
 [[nodiscard]] ModeState mode_state_from(const bropty::Terminal& t) noexcept;
+// The other way: bropty Modes with what a ModeState carries (the rest at
+// their defaults).
+[[nodiscard]] bropty::Modes modes_from(const ModeState& m) noexcept;
 
 // ---- server side -------------------------------------------------------------------
 

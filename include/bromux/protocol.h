@@ -21,7 +21,7 @@
 namespace bromux {
 
 inline constexpr uint32_t kProtocolMagic = 0x584D5242;  // "BRMX" little endian
-inline constexpr uint16_t kProtocolMajor = 1;
+inline constexpr uint16_t kProtocolMajor = 2;
 inline constexpr uint16_t kProtocolMinor = 0;
 
 enum class MsgType : uint16_t {
@@ -277,7 +277,7 @@ struct AckMsg {
 struct FetchHistoryMsg {
     uint32_t req{0};
     uint64_t session{0};
-    uint64_t start{0};  // history row index, 0 = oldest held
+    uint64_t start{0};  // absolute row number (Op_History): the first row wanted
     uint32_t count{0};
     BROMUX_MSG(FetchHistory)
 };
@@ -391,8 +391,10 @@ struct HistoryMsg {
     uint32_t req{0};
     uint64_t session{0};
     uint64_t feed_seq{0};      // state version the rows were read at
+    uint64_t first_row{0};     // absolute number of the oldest history row held then
     uint64_t history_rows{0};  // rows held at that moment
-    uint64_t start{0};         // index of rows[0]
+    uint64_t epoch{0};         // the row numbering they were read in (Op_History)
+    uint64_t start{0};         // absolute number of rows[0]
     std::vector<std::string> rows;  // row encodings (row_codec.h)
     BROMUX_MSG(History)
 };

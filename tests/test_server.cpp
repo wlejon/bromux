@@ -257,27 +257,48 @@ void test_clipboard() {
     uint64_t id = make(*c, f.spec({"clipread"}));
     if (!attach(*c, id, 80, 24)) return;
     CHECK(wait_text(*c, id, "CLIP READY"));
-    std::vector<ClientEvent> evs;
-    c->send_raw(id, "g");
+    // Ask (key b: BEL-terminated, s: ST) and wait for the request.
+    auto ask = [&](const char* key, uint32_t& token, std::string& sel) {
+        std::vector<ClientEvent> evs;
+        c->send_raw(id, key);
+        return fx::pump_until(*c, [&] {
+            for (const ClientEvent& e : evs)
+                if (e.kind == ClientEvent::Kind::ClipboardRequest) {
+                    token = e.token;
+                    sel = e.text;
+                    return true;
+                }
+            return false;
+        }, 5s, &evs);
+    };
     uint32_t token = 0;
     std::string sel;
-    const bool asked = fx::pump_until(*c, [&] {
-        for (const ClientEvent& e : evs)
-            if (e.kind == ClientEvent::Kind::ClipboardRequest) {
-                token = e.token;
-                sel = e.text;
-                return true;
-            }
-        return false;
-    }, 5s, &evs);
+    const bool asked = ask("b", token, sel);
 #if defined(_WIN32)
     // ConPTY does not forward OSC 52 queries; only the policy plumbing applies.
     (void)asked;
 #else
     CHECK(asked);
     CHECK_EQ(sel, std::string("c"));
+    // The terminal answers, terminated as the program asked.
     c->answer_clipboard(id, token, true, "secret");
-    CHECK(wait_text(*c, id, "GOT:c2VjcmV0"));
+    CHECK(wait_text(*c, id, "GOT:c2VjcmV0 BEL"));
+    // Refused: no reply; a stale answer to it changes nothing either.
+    uint32_t refused = 0;
+    CHECK(ask("s", refused, sel));
+    c->answer_clipboard(id, refused, false, "");
+    c->answer_clipboard(id, refused, true, "late");
+    c->answer_clipboard(id, token, true, "again");  // answered already
+    uint32_t third = 0;
+    CHECK(ask("s", third, sel));
+    CHECK(third != refused);
+    c->answer_clipboard(id, third, true, "two");
+    CHECK(wait_text(*c, id, "GOT:dHdv ST"));
+    CHECK(c->sync(id));
+    const ScreenModel* m = c->screen(id);
+    int answers = 0;
+    for (int y = 0; m && y < m->rows(); ++y) answers += m->row(y).text().find("GOT:") != std::string::npos;
+    CHECK_EQ(answers, 2);
 #endif
 }
 
@@ -341,9 +362,12 @@ void test_history() {
     auto t = replay_tee(th, recs, size_t(h->feed_seq));
     std::string d = oracle::compare_history(*h, *t);
     CHECK_MSG(d.empty(), d);
-    // A window in the middle.
-    auto part = c->fetch_history(id, 100, 50, &err);
-    CHECK(part && part->start == 100 && part->rows.size() == 50);
+    CHECK_EQ(h->start, h->first_row);  // 0 is before the oldest row held: clamped
+    CHECK_EQ(h->first_row, m->history_first_row());
+    // A window in the middle, by absolute row number.
+    const uint64_t mid = uint64_t(h->first_row) + 100;
+    auto part = c->fetch_history(id, mid, 50, &err);
+    CHECK(part && part->start == int64_t(mid) && part->rows.size() == 50);
     if (part) {
         auto t2 = replay_tee(th, recs, size_t(part->feed_seq));
         d = oracle::compare_history(*part, *t2);
@@ -360,6 +384,134 @@ void test_history() {
         d = oracle::compare_history(*h2, *t3);
         CHECK_MSG(d.empty(), d);
     }
+}
+
+// Client::view(): bropty's TerminalView over the session's model, fetching
+// history as it needs it, answering as a view over the session's terminal
+// (the recording replayed) does.
+void test_view() {
+    check::phase("view over a muxed session", 120);
+    fx::Fixture f("view", g_child);
+    auto c = f.client();
+    if (!c) return;
+    SessionSpec spec = f.spec({"lines", "900"}, 80, 24);
+    spec.scrollback_rows = 600;  // rows are evicted: numbers are absolute
+    uint64_t id = make(*c, spec);
+    if (!attach(*c, id, 80, 24)) return;
+    CHECK(wait_text(*c, id, "LINES DONE", 20s));
+    CHECK(c->sync(id));
+    bropty::TerminalView* v = c->view(id);
+    ScreenSource* src = c->source(id);
+    CHECK(v && src && c->view(id) == v);
+    if (!v || !src) return;
+    CHECK(src->first_row() > 0);
+    std::string err;
+    TeeHeader th;
+    std::vector<TeeRecord> recs;
+    CHECK(read_tee(f.tee(id), th, recs, &err));
+    auto t = replay_tee(th, recs, size_t(c->screen(id)->feed_seq()));
+    CHECK_EQ(src->first_row(), t->first_row());
+    CHECK_EQ(src->end_row(), t->end_row());
+    bropty::TerminalView tv(*t);
+
+    // Scrolled back: blank until the rows come, then the terminal's rows.
+    v->scroll_by(-300);
+    tv.scroll_by(-300);
+    CHECK_EQ(v->snapshot()->lines[0]->view().text(), std::string(""));
+    std::vector<ClientEvent> evs;
+    auto arrived = [&] {
+        for (const ClientEvent& e : evs)
+            if (e.kind == ClientEvent::Kind::History && e.session == id) return src->requests_in_flight() == 0;
+        return false;
+    };
+    CHECK(fx::pump_until(*c, arrived, 5s, &evs));
+    auto a = v->snapshot();
+    auto b = tv.snapshot();
+    CHECK_EQ(a->top_row, b->top_row);
+    for (int y = 0; y < 24; ++y)
+        CHECK_EQ(a->lines[size_t(y)]->view().text(), b->lines[size_t(y)]->view().text());
+
+    // A search over all of history waits for the rows it reaches.
+    auto needle = std::make_shared<bropty::LiteralMatcher>("line 4");
+    v->search().start(needle);
+    tv.search().start(needle);
+    while (tv.search().step()) {
+    }
+    CHECK(fx::pump_until(*c, [&] {
+        while (v->search().step() && !v->search().waiting()) {
+        }
+        return v->search().complete();
+    }, 10s));
+    CHECK_EQ(v->search().size(), tv.search().size());
+    bool same = v->search().size() == tv.search().size();
+    for (size_t i = 0; same && i < v->search().size(); ++i) same = v->search().at(i) == tv.search().at(i);
+    CHECK(same);
+
+    // Selection over everything, once every row is here.
+    src->request_rows(src->first_row(), src->screen_top_row());
+    CHECK(fx::pump_until(*c, [&] { return src->requests_in_flight() == 0; }, 10s));
+    v->selection().select_all();
+    tv.selection().select_all();
+    CHECK_EQ(v->selection().text(), tv.selection().text());
+
+    // A resize renumbers: the selection goes, the view returns to the bottom.
+    v->scroll_by(-50);
+    c->resize(id, 37, 24);
+    CHECK(fx::pump_until(*c, [&] { return c->screen(id)->cols() == 37; }, 5s));
+    CHECK(!v->selection().active());
+    CHECK(v->at_bottom());
+    CHECK(c->sync(id));
+    CHECK(read_tee(f.tee(id), th, recs, &err));
+    auto t2 = replay_tee(th, recs, size_t(c->screen(id)->feed_seq()));
+    CHECK_EQ(c->screen(id)->history_epoch(), t2->row_numbering());
+    src->request_rows(src->first_row(), src->screen_top_row());
+    CHECK(fx::pump_until(*c, [&] { return src->requests_in_flight() == 0; }, 10s));
+    bropty::TerminalView tv2(*t2);
+    v->selection().select_all();
+    tv2.selection().select_all();
+    CHECK_EQ(v->selection().text(), tv2.selection().text());
+
+    // Detached: the view goes with the model.
+    c->detach(id);
+    CHECK(fx::pump_until(*c, [&] { return c->screen(id) == nullptr; }, 5s));
+    CHECK(c->view(id) == nullptr);
+}
+
+// Frames send only what changed: a line scrolling in is a scroll op and the
+// new row, not a repaint (the server knows rows by their stamps).
+void test_frame_diffs() {
+    check::phase("frame diffs");
+    fx::Fixture f("diffs", g_child);
+    auto c = f.client();
+    if (!c) return;
+    uint64_t id = make(*c, f.spec({"echo"}, 60, 8));
+    if (!attach(*c, id, 60, 8)) return;
+    CHECK(wait_text(*c, id, "READY"));
+    for (int i = 0; i < 10; ++i) {  // fill the screen
+        c->send_raw(id, std::string(1, char('a' + i)));
+        CHECK(wait_text(*c, id, std::string("[") + char('a' + i) + "]"));
+    }
+    CHECK(c->sync(id));
+    std::vector<ClientEvent> evs;
+    c->send_raw(id, "z");
+    CHECK(fx::pump_until(*c, [&] { return fx::screen_has(c->screen(id), "[z]"); }, 5s, &evs));
+    int rows = 0;
+    int scrolled = 0;
+    for (const ClientEvent& e : evs)
+        if (e.kind == ClientEvent::Kind::Frame) {
+            rows += e.effects.rows_changed;
+            scrolled += e.effects.scrolled;
+        }
+#if !defined(_WIN32)
+    // (ConPTY repaints as it likes; the result is still checked below.)
+    CHECK_EQ(scrolled, 1);
+    CHECK(rows <= 2);
+#else
+    (void)rows;
+    (void)scrolled;
+#endif
+    std::string d = fx::verify(*c, id, f);
+    CHECK_MSG(d.empty(), d);
 }
 
 void test_exit() {
@@ -500,6 +652,8 @@ int main(int argc, char** argv) {
     test_clipboard();
     test_meta_blobs_notify();
     test_history();
+    test_view();
+    test_frame_diffs();
     test_exit();
     test_protocol_errors();
     return check::finish("test_server");

@@ -16,7 +16,10 @@
 
 #include "bromux/protocol.h"
 #include "bromux/screen_model.h"
+#include "bromux/screen_source.h"
 #include "bromux/stream.h"
+
+#include <bropty/view.h>
 
 #include <chrono>
 #include <condition_variable>
@@ -60,6 +63,7 @@ struct SshTarget {
 struct ClientEvent {
     enum class Kind : uint8_t {
         Frame,             // a session's ScreenModel changed: `effects`
+        History,           // history rows its view() / source() asked for arrived: redraw
         Event,             // terminal event: `event`
         ClipboardRequest,  // the program asked for the clipboard: answer_clipboard(session, token, ...)
         Detached,          // `detach_reason`; the session's model is gone
@@ -87,16 +91,6 @@ std::unique_ptr<Stream> connect_or_start(const ConnectOptions& options, std::str
 // stdin / stdout to the local server until either side closes. Returns the
 // process exit status.
 int run_proxy(const ConnectOptions& options, std::string* err = nullptr);
-
-// History rows fetched on demand, with their own styles.
-struct HistoryChunk {
-    uint64_t feed_seq{0};
-    uint64_t history_rows{0};  // rows the session held when they were read
-    uint64_t start{0};
-    StylePool styles;
-    std::vector<ModelRow> rows;
-    [[nodiscard]] bropty::RowView row(size_t i) const noexcept { return rows[i].view(styles); }
-};
 
 class Client {
 public:
@@ -126,6 +120,13 @@ public:
 
     // The model of an attached session, or null.
     [[nodiscard]] ScreenModel* screen(uint64_t session);
+    // The model with its history as a bropty::RowSource, and a bropty
+    // TerminalView over it (viewport, selection, search, links, frames): made
+    // on first use, kept up to date by dispatch(), fetching the history rows
+    // they need (ClientEvent::History says some arrived). Null when the
+    // session is not attached; both go with the model (detach, re-attach).
+    [[nodiscard]] ScreenSource* source(uint64_t session);
+    [[nodiscard]] bropty::TerminalView* view(uint64_t session);
 
     // ---- fire and forget ------------------------------------------------------------
     void send_key(uint64_t session, const bropty::KeyEvent& ev);
@@ -150,6 +151,9 @@ public:
     std::optional<SessionInfo> attach(uint64_t session, int cols, int rows, uint32_t flags = 0,
                                       std::string* err = nullptr);
     bool close_session(uint64_t session, std::string* err = nullptr);
+    // History rows from absolute row `start` (clamped to what the session
+    // holds; ScreenModel::history_first_row()), at most `count`. view()
+    // fetches what it shows by itself.
     std::optional<HistoryChunk> fetch_history(uint64_t session, uint64_t start, uint32_t count,
                                               std::string* err = nullptr);
     std::optional<std::string> get_blob(std::string_view key, std::string* err = nullptr);
@@ -175,6 +179,7 @@ private:
     void process(uint16_t type, std::string_view payload, std::vector<ClientEvent>& out);
     void pump(std::vector<ClientEvent>& out);
     bool reply_error(const Reply& r, std::string* err);
+    bool history_failed(uint32_t req);  // a ScreenSource's request was refused
 
     std::unique_ptr<Stream> stream_;
     std::thread reader_;
@@ -197,6 +202,13 @@ private:
     std::map<uint32_t, Reply> replies_;
     std::vector<ClientEvent> held_;  // events that arrived while a helper waited
     std::map<uint64_t, std::unique_ptr<ScreenModel>> screens_;
+    // Per session, over its model (declared after screens_: destroyed first).
+    struct Mirror {
+        std::unique_ptr<ScreenSource> source;
+        std::unique_ptr<bropty::TerminalView> view;  // observes source: destroyed first
+    };
+    std::map<uint64_t, Mirror> mirrors_;
+    std::map<uint32_t, uint64_t> history_reqs_;  // a ScreenSource's FetchHistory -> session
 };
 
 }  // namespace bromux

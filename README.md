@@ -80,7 +80,8 @@ for (;;) {
 
 - Input is sent with `send_key`, `send_text`, `paste`, `send_mouse` and `focus`.
 - `resize` changes the client's size.
-- `fetch_history(session, start, count)` reads scrollback.
+- `fetch_history(session, start, count)` reads scrollback. Rows have absolute numbers that survive eviction (`ScreenModel::history_first_row()`, `history_epoch()`).
+- `view(session)` is a bropty `TerminalView` over the session: viewport, selection and copy, search and links work as over a local bropty `Terminal`. It fetches the scrollback it shows or searches by itself, and `ClientEvent::History` says rows arrived. `source(session)` is the bropty `RowSource` underneath.
 - `put_blob` / `get_blob` store opaque client state, such as a layout, on the server.
 
 `Client` is not thread-safe. It is meant to be driven from the UI thread; a background thread only reads the connection.
@@ -102,7 +103,8 @@ Every test is a real ctest that fails in Release builds; none depends on `assert
 |------|--------|
 | test_wire | primitives, framing, every message, fuzzed input |
 | test_codec | row and screen codec against random terminals; scroll ops; malformed input |
-| test_server | sessions, input routing, resize policies, events, clipboard, meta/blobs, history, exit, protocol errors |
+| test_source | `ScreenSource` and a bropty `TerminalView` over it against the same over a `Terminal`; history arriving later, numbering epochs, eviction |
+| test_server | sessions, input routing, resize policies, events, clipboard, meta/blobs, history, `Client::view`, frame diffs, exit, protocol errors |
 | test_oracle | random VT streams and a real shell under multi-client churn; vi (POSIX) |
 | test_flow | flood fairness, a stalled client, client processes killed mid-stream |
 | test_daemon | auto-start, persistence, idle exit, start races, a killed server, the proxy, the CLI |

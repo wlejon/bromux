@@ -1,4 +1,6 @@
-# bromux wire protocol, version 1.0
+# bromux wire protocol, version 2.0
+
+Version 2 numbers scrollback rows absolutely (`Op_History`, `FetchHistory`, `History`); version 1 indexed them from the oldest row held, an index that shifted whenever rows were evicted.
 
 A client and a bromux server talk over one byte stream. Locally that is a Unix socket or a Windows named pipe. Remotely it is the stdio of `ssh host bromux proxy`, which relays bytes to the remote host's local server without reading them. The protocol is the same in every case, and nothing in it depends on the transport.
 
@@ -59,7 +61,7 @@ Messages that expect a reply carry a client-chosen `u32 req`, and the reply echo
 | 0x010C | Focus | `u64 session, bool focused` | - |
 | 0x010D | RawInput | `u64 session, str bytes` (written to the PTY unchanged) | - |
 | 0x010E | Ack | `u64 session, u64 frame_seq` | - |
-| 0x010F | FetchHistory | `u32 req, u64 session, u64 start, u32 count` | History |
+| 0x010F | FetchHistory | `u32 req, u64 session, u64 start, u32 count` (`start`: absolute row number) | History |
 | 0x0110 | SetMeta | `u64 session, str key, str value, bool erase` | - (SessionNotify to watchers) |
 | 0x0111 | SetPolicy | `u64 session, u8 resize_policy, u8 clipboard_policy` (0xFF = unchanged) | - |
 | 0x0112 | PutBlob | `str key, str data` (empty data erases) | - |
@@ -85,7 +87,7 @@ Input messages (Key through RawInput) on a read-only attachment get `Error(ReadO
 | 0x0208 | Frame | `u64 session, u64 frame_seq, u64 feed_seq, str ops` |
 | 0x0209 | Event | `u64 session, u8 kind, svarint x, svarint y, str a, str b` |
 | 0x020A | ClipboardRequest | `u64 session, u32 token, str selection` |
-| 0x020B | History | `u32 req, u64 session, u64 feed_seq, u64 history_rows, u64 start, strings rows` |
+| 0x020B | History | `u32 req, u64 session, u64 feed_seq, u64 first_row, u64 history_rows, u64 epoch, u64 start, strings rows` |
 | 0x020C | Blob | `u32 req, bool found, str data` |
 | 0x020D | SyncDone | `u32 req, u64 session, u64 feed_seq` |
 | 0x020E | Pong | `u32 req` |
@@ -142,7 +144,7 @@ Read-only and no-resize attachments, and attachments that have no size yet, neve
 |-------|--------|--------|
 | 0 | Deny | Neither writes nor queries reach a client. |
 | 1 | WriteOnly (the default) | Writes become `ClipboardWrite` events. Queries go unanswered. |
-| 2 | ReadWrite | A query goes as a `ClipboardRequest` to the most recently active client that can send input. Its `ClipboardData` is written back to the program as the OSC 52 reply. Unanswered requests expire after 10 s. |
+| 2 | ReadWrite | A query goes as a `ClipboardRequest` to the most recently active client that can send input. Its `ClipboardData` answers the query: the terminal writes the OSC 52 reply, with the query's selection and terminator. `ok = false` gets no reply. Unanswered requests expire after 10 s, without a reply. |
 
 **Event kinds** (`u8`):
 
@@ -169,7 +171,7 @@ The server runs the terminal emulator, a bropty `Terminal`. A client never sees 
 
 - **`feed_seq`** is the version of a session's state. It increases by one for each chunk of PTY output the emulator consumes, and for each resize. A frame shows exactly the state at its `feed_seq`.
 - **`frame_seq`** counts frames per attachment, starting at 1. The client acknowledges each frame with `Ack` after applying it.
-- **Attach** produces a full frame: `Op_Size` first, then every row, then the cursor, modes, text and palette. After that, each frame is a diff against what *that client* was last sent. The diff contains rows whose content hash changed, a scroll op when most rows moved together, and state ops only when the state changed. Each client's diffs are independent, so a client that falls behind skips intermediate states and is not sent a backlog.
+- **Attach** produces a full frame: `Op_Size` first, then every row, then the cursor, modes, text and palette. After that, each frame is a diff against what *that client* was last sent. The diff contains rows whose content changed (the server knows rows by the terminal's row stamps, content serials that move with a row as it scrolls), a scroll op when most rows moved together, and state ops only when the state changed. Each client's diffs are independent, so a client that falls behind skips intermediate states and is not sent a backlog.
 - **Flow control:**
   - Frames to a client pause while it has 1 MiB of unacknowledged frame bytes, or 1 MiB of output pending on its connection.
   - Frames to one client are at least 8 ms apart. A change after a quiet spell goes out at once.
@@ -190,7 +192,7 @@ The op stream is a sequence of `u8 op, body`, applied in order:
 | 5 | Modes | `varint mode bits, u8 mouse tracking, u8 mouse encoding, varint kitty keyboard flags` |
 | 6 | Text | `u8 which` (0 title, 1 icon name, 2 cwd), `str value` |
 | 7 | Palette | 259 × (`u8 r, u8 g, u8 b`): colors 0-255, then foreground, background, cursor |
-| 8 | History | `varint rows`: the scrollback rows the server currently holds |
+| 8 | History | `varint first_row, varint rows, varint epoch`: the scrollback held, as absolute row numbers (below) |
 
 Mode bits are listed in `codec.h` (`ModeBit`). The alternate screen is bit 24. A client that receives an op it does not know, or an op that does not validate, rejects the whole frame.
 
@@ -221,7 +223,11 @@ Run kinds:
 
 ### Scrollback
 
-Scrollback is never pushed to clients. `Op_History` keeps a client informed of how many rows exist. `FetchHistory(start, count)` returns at most 10000 rows per request, as row encodings, where index 0 is the oldest row held. The reply carries the `feed_seq` the rows were read at, so a client can tell whether the history moved underneath it.
+Scrollback is never pushed to clients. Rows have absolute numbers (bropty's): the scrollback is rows `first_row .. first_row + rows - 1`, and screen row 0 is row `first_row + rows`, also while the alternate screen (which has no scrollback of its own) is shown. Rows evicted from the front of the scrollback (its capacity, `ED 3`) take their numbers with them: `first_row` only grows. A row keeps its number, and a scrollback row its content, while `epoch` stays the same. A resize reflows the scrollback and starts a new epoch, and a client drops whatever rows it cached. One exception: the newest scrollback row's wrap flag can still change while its line continues on screen row 0.
+
+`Op_History` keeps a client informed of all three. `FetchHistory(start, count)` asks for rows from absolute row `start`. The server clamps `start` to the rows it holds and returns at most 10000 rows per request, as row encodings. The reply carries `start` (the number of `rows[0]`), `first_row`, `history_rows` and `epoch` as they were when the rows were read, and that moment's `feed_seq`. A client keeps rows only from a reply in its current epoch.
+
+The client library serves a session's model plus fetched scrollback as a bropty `RowSource` (`ScreenSource`, `Client::view()`), fetching rows in aligned blocks as a view or search needs them.
 
 ## Session recordings (testing)
 
