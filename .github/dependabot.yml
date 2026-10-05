@@ -1,0 +1,29 @@
+version: 2
+
+# No package manifest to watch. The siblings (bropty, brosearch) resolve from
+# ../<name> first, and CI checks them out from main, so they are always
+# current there. The third_party/ submodules are only the fallback for builds
+# without the sibling layout, and their pins are moved by hand, deliberately,
+# when bromux needs a newer sibling. That leaves the pinned actions in
+# .github/workflows/.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    labels: [ci]
+    commit-message:
+      prefix: "ci"
+    ignore:
+      # GitHub maintains the `v4` major tag and ships security fixes to it, so
+      # `@v4` is already patched without any PR. Pinning to an exact patch would
+      # trade that automatic patching for a codeql-action PR in every repo on
+      # each release. Major bumps (v4 -> v5) still come through.
+      - dependency-name: "github/codeql-action"
+        update-types:
+          - "version-update:semver-patch"
+          - "version-update:semver-minor"

@@ -1,0 +1,220 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# bromux resolves its siblings from ../<name> first (see the bromux_sibling()
+# block in CMakeLists.txt), so the test jobs reconstruct that layout in the
+# runner workspace before configuring:
+#
+#     $GITHUB_WORKSPACE/
+#       bromux/      <- this repo, checked out into a named path, not the root
+#       bropty/      <- the PTY and the terminal emulator
+#       brosearch/   <- bropty's regex scrollback search
+#
+# Hence `path:` on the checkouts and `cmake -S bromux`. The siblings are taken
+# from main, which mirrors how the stack is developed (everything tracks
+# main), so this CI also catches a breaking change landing in one of them.
+#
+# The `submodule` job builds the other way, from the flat third_party/
+# submodules with no sibling beside it, so the fallback a consumer without the
+# sibling layout relies on cannot rot.
+#
+# test_remote attaches over the real ssh. On Linux and macOS
+# .github/ci/ssh-localhost.sh points it at the runner itself: a key generated
+# for the job, authorized only from the loopback address with forwarding and
+# the pty refused, and sshd started if it is not running. Where sshd cannot be
+# brought up it says so, and test_remote skips with that reason in the job
+# summary. On Windows it skips: the test drives its remote end through a
+# POSIX shell (mkdir, cat and rm of the session recordings under /tmp), and a
+# Windows runner has no POSIX sshd to point it at.
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-gcc,          os: ubuntu-24.04, cc: gcc,   cxx: g++,     config: Release }
+          - { name: linux-clang,        os: ubuntu-24.04, cc: clang, cxx: clang++, config: Release }
+          - { name: windows-msvc,       os: windows-2022,                          config: Release }
+          # Debug CRT: iterator debugging and the library's own assert()s.
+          - { name: windows-msvc-debug, os: windows-2022,                          config: Debug }
+          - { name: macos-arm64,        os: macos-15,                              config: Release }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: bromux
+
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/bropty
+          path: bropty
+
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/brosearch
+          path: brosearch
+
+      - name: Install Ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ninja-build
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake -S bromux -B build
+          else
+            cmake -S bromux -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+          fi
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }} --parallel 4
+
+      - name: ssh to localhost for test_remote
+        if: runner.os != 'Windows'
+        run: bash bromux/.github/ci/ssh-localhost.sh build
+
+      # One at a time: the end-to-end tests run servers, helpers and (on
+      # Windows) ConPTYs, and process_census checks none was left behind.
+      - name: Test
+        run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure -j 1
+
+      # ctest shows a skipped or passing test's output nowhere, so what was
+      # skipped here goes to the job summary: a skip is only honest if someone
+      # can read why.
+      - name: Skip reasons
+        if: always()
+        shell: bash
+        run: |
+          { echo "### Skipped (${{ matrix.name }})"; echo '```'
+            grep -hiE '\bskip(ped)?\b' build/Testing/Temporary/LastTest*.log || echo none
+            echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # ── Submodule fallback ────────────────────────────────────────────────────
+  #
+  # No sibling checkouts: bropty and brosearch come from the flat third_party/
+  # submodules at the commits this repo pins. The configure step checks both
+  # really took that path.
+  submodule:
+    name: Submodule fallback · ubuntu-24.04
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: bromux
+          submodules: recursive
+
+      - name: Install Ninja
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ninja-build
+
+      - name: Configure
+        run: |
+          test ! -e bropty && test ! -e brosearch
+          cmake -S bromux -B build -G Ninja -DCMAKE_BUILD_TYPE=Release | tee configure.log
+          for s in brosearch bropty; do
+            grep -q "bromux: $s from .*third_party/$s (submodule)" configure.log
+          done
+
+      - name: Build
+        run: cmake --build build --parallel 4
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -j 1
+
+  # ── Coverage ──────────────────────────────────────────────────────────────
+  #
+  # Scoped to bromux's own src/, include/ and tools/: the siblings are
+  # measured by their own CI. Debug (-O0), so this is also the Linux job where
+  # assert()s are live, and test_remote runs here too, so the ssh transport is
+  # measured.
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: bromux
+
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/bropty
+          path: bropty
+
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/brosearch
+          path: brosearch
+
+      - name: Install gcovr + Ninja
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends gcovr ninja-build
+
+      - name: Configure (instrumented)
+        run: |
+          cmake -S bromux -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBROMUX_COVERAGE=ON
+
+      - name: Build
+        run: cmake --build build --parallel 4
+
+      - name: ssh to localhost for test_remote
+        run: bash bromux/.github/ci/ssh-localhost.sh build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -j 1
+
+      # pipefail: piping gcovr into tee otherwise hands the step tee's exit
+      # status, so a gcovr crash produces no report and the job still goes green.
+      #
+      # Run from the workspace root, where build/ is, with the filters spelled
+      # bromux/...: gcovr only looks for .gcda files under its root.
+      - name: Report
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p coverage-html
+          gcovr --root . \
+            --filter 'bromux/src/' --filter 'bromux/include/bromux/' --filter 'bromux/tools/' \
+            --exclude-unreachable-branches \
+            --print-summary \
+            --html-details coverage-html/index.html \
+            | tee coverage-summary.txt
+          test -s coverage-html/index.html
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo '## Coverage — `src/` + `include/bromux/` + `tools/`'
+            echo
+            echo 'Linux only: the Windows named-pipe and ConPTY paths are exercised by the Windows jobs, not measured. bropty and brosearch are measured by their own CI.'
+            echo
+            echo '```'
+            cat coverage-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-html
+          path: coverage-html/
+          retention-days: 14

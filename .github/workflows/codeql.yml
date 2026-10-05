@@ -1,0 +1,79 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+# bromux is a server that clients connect to over a local socket and over
+# ssh, and a client that decodes whatever a server sends back. Both ends parse
+# a length-prefixed binary protocol (frames, row diffs, history pages) whose
+# sizes and counts come off the wire. Out-of-bounds reads on a truncated or
+# lying message, integer overflow in a count * size, and path problems in the
+# socket and recording directories are the realistic bugs, and they are what
+# the C++ queries look for. The POSIX transport is what this analyses.
+jobs:
+  analyze:
+    name: Analyze C++
+    runs-on: ubuntu-24.04
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: bromux
+
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/bropty
+          path: bropty
+
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/brosearch
+          path: brosearch
+
+      - name: Install Ninja
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ninja-build
+
+      # Tests off: they are scaffolding, and alerts in them would only be
+      # noise. The bromux executable (tools/) stays in: it is the server and
+      # proxy end of the protocol.
+      - name: Configure
+        run: cmake -S bromux -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBROMUX_BUILD_TESTS=OFF
+
+      # bropty and brosearch are siblings with their own CodeQL workflows.
+      # Building them here, ahead of `init`, keeps them out of this analysis:
+      # for a compiled language CodeQL analyses what it observes the compiler
+      # compile while tracing, and `paths-ignore` does not filter compiled
+      # sources. Extracting them here would double-report every finding
+      # against the wrong repo.
+      - name: Pre-build sibling code (outside the traced build)
+        run: cmake --build build --parallel 4 --target bropty brosearch
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: c-cpp
+          build-mode: manual
+          source-root: bromux
+          queries: security-extended
+
+      # Only bromux's own TUs are left to compile, so only they are traced.
+      - name: Build bromux (traced)
+        run: cmake --build build --parallel 4
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:c-cpp

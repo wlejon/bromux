@@ -1,8 +1,10 @@
 # bromux
 
+[![CI](https://github.com/wlejon/bromux/actions/workflows/ci.yml/badge.svg)](https://github.com/wlejon/bromux/actions/workflows/ci.yml)
+
 A terminal multiplexer as a reusable C++20 library. A server process owns PTY sessions and runs their terminal emulators. Terminals and UIs attach to it as clients: they receive a screen snapshot and then incremental updates, and send input and resizes. When a UI quits, crashes or restarts, its sessions keep running, and reattaching restores everything.
 
-bromux was built for the bro terminal, but it does not depend on bro or bronze; any terminal can embed the client. It builds on [bropty](../bropty), which provides the PTY and the emulator.
+bromux was built for the [bro](https://github.com/wlejon/bro) terminal, but it does not depend on bro or bronze; any terminal can embed the client. It builds on [bropty](https://github.com/wlejon/bropty), which provides the PTY and the emulator (and itself uses [brosearch](https://github.com/wlejon/brosearch) for regex search).
 
 - **Server-side emulation.** The server runs a bropty `Terminal` per session. Clients receive *state* (rows, cursor, modes, title, palette), never a byte replay. Reattaching sends one snapshot. Updates are dirty-row diffs computed per client, with scroll detection. Scrollback is fetched on demand.
 - **Many clients per session**, under a resize policy (latest / smallest / largest / fixed). Clients can also attach read-only or no-resize.
@@ -33,7 +35,18 @@ cmake -G Ninja -B build-release -DCMAKE_BUILD_TYPE=Release   # Linux / macOS
 cmake --build build-release && ctest --test-dir build-release
 ```
 
-bropty is found as `../bropty`; set `-DBROPTY_DIR=<path>` to use another checkout. If the parent project already defines a `bropty` target, that target is used. The build produces:
+bromux needs [bropty](https://github.com/wlejon/bropty) and, through it, [brosearch](https://github.com/wlejon/brosearch). CMake looks for each in this order: a target the parent project already defined; a checkout beside the top-level project (`../bropty`, `../brosearch`, or `-DBROPTY_DIR=<path>` / `-DBROSEARCH_DIR=<path>`); the `third_party/<name>` submodule. Either clone the three side by side, or use the pinned submodules:
+
+```bash
+git clone https://github.com/wlejon/brosearch     # side by side
+git clone https://github.com/wlejon/bropty
+git clone https://github.com/wlejon/bromux
+
+git clone https://github.com/wlejon/bromux        # or one checkout
+cd bromux && git submodule update --init --recursive
+```
+
+The submodules are flat, and resolved against the top-level project: a project that vendors bromux under its own `third_party/` puts bropty and brosearch there too, side by side. The build produces:
 
 - `bromux`, a static library;
 - `bromux` (target `bromux_cli`), the server, proxy and command-line client.
@@ -119,4 +132,10 @@ test_remote is skipped unless these variables name a remote host that has bromux
 | `BROMUX_TEST_SSH_CHILD` | path to the test helper `mux_child` on the remote |
 | `BROMUX_TEST_SSH_ARGS` | optional extra ssh arguments |
 
+CI runs it on Linux against the runner itself over the real ssh (`.github/ci/ssh-localhost.sh`: a key generated for the job, accepted only from the loopback address, with forwarding and the pty refused).
+
 `BROMUX_ORACLE_STEPS=N` multiplies the churn, and `BROMUX_TEST_LOG=1` prints the server log.
+
+## License
+
+MIT; see [LICENSE](LICENSE).

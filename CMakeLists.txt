@@ -18,20 +18,51 @@ if(MSVC)
     endif()
 endif()
 
-# ---- bropty ------------------------------------------------------------------
-# The terminal substrate. Resolved like bro's siblings: an existing `bropty`
-# target (a superbuild already added it) wins; otherwise the standalone repo
-# beside this one (../bropty), overridable with -DBROPTY_DIR=<path>.
-if(NOT TARGET bropty)
-    get_filename_component(_bropty_default "${CMAKE_CURRENT_SOURCE_DIR}/../bropty" ABSOLUTE)
-    set(BROPTY_DIR "${_bropty_default}" CACHE PATH "Path to the bropty repo")
-    if(NOT EXISTS "${BROPTY_DIR}/CMakeLists.txt")
-        message(FATAL_ERROR "bromux needs bropty: clone it beside bromux (../bropty) or pass -DBROPTY_DIR=<path>")
+# Coverage. Scoped to a top-level build: a consumer that add_subdirectory()s
+# bromux has no business having its own build instrumented from in here.
+option(BROMUX_COVERAGE "Instrument the build for gcov coverage (GCC/Clang)" OFF)
+if(BROMUX_COVERAGE AND PROJECT_IS_TOP_LEVEL)
+    if(MSVC)
+        message(FATAL_ERROR "BROMUX_COVERAGE requires GCC or Clang (gcov instrumentation)")
     endif()
-    message(STATUS "bromux: bropty from ${BROPTY_DIR}")
-    set(BROPTY_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    add_subdirectory("${BROPTY_DIR}" "${CMAKE_BINARY_DIR}/bropty" EXCLUDE_FROM_ALL)
+    add_compile_options(--coverage -O0 -g)
+    add_link_options(--coverage)
 endif()
+
+# ---- siblings ------------------------------------------------------------------
+# bropty (the terminal substrate) and, through it, brosearch. Each resolves
+# like bro's siblings: an existing target (a superbuild already added it)
+# wins; otherwise the standalone repo beside the top-level project
+# (../<name>, overridable with -D<NAME>_DIR=<path>); otherwise the
+# third_party/<name> submodule of the top-level project. The fallback is flat:
+# a consumer vendoring bromux carries bropty and brosearch side by side in its
+# own third_party/. brosearch goes first, so bropty finds its target.
+function(bromux_sibling name what)
+    if(TARGET ${name})
+        return()
+    endif()
+    string(TOUPPER "${name}" _upper)
+    set(${_upper}_DIR "${CMAKE_SOURCE_DIR}/../${name}" CACHE PATH
+        "Path to the standalone ${name} repo (set to a missing path to force the submodule)")
+    if(EXISTS "${${_upper}_DIR}/CMakeLists.txt")
+        message(STATUS "bromux: ${name} from ${${_upper}_DIR}")
+        add_subdirectory("${${_upper}_DIR}" "${CMAKE_BINARY_DIR}/${name}" EXCLUDE_FROM_ALL)
+    elseif(EXISTS "${CMAKE_SOURCE_DIR}/third_party/${name}/CMakeLists.txt")
+        message(STATUS "bromux: ${name} from ${CMAKE_SOURCE_DIR}/third_party/${name} (submodule)")
+        add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/${name}" "${CMAKE_BINARY_DIR}/${name}" EXCLUDE_FROM_ALL)
+    else()
+        message(FATAL_ERROR
+            "bromux needs ${name} (${what}): not found at ${${_upper}_DIR} or "
+            "${CMAKE_SOURCE_DIR}/third_party/${name}. Clone https://github.com/wlejon/${name} next "
+            "to this repo, run `git submodule update --init --recursive`, or pass -D${_upper}_DIR=<path>.")
+    endif()
+endfunction()
+
+set(BROSEARCH_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(BROSEARCH_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+bromux_sibling(brosearch "bropty's regex scrollback search")
+set(BROPTY_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+bromux_sibling(bropty "the PTY and the terminal emulator")
 
 # ---- library -------------------------------------------------------------------
 set(BROMUX_SOURCES
