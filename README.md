@@ -132,7 +132,7 @@ test_remote is skipped unless these variables name a remote host that has bromux
 | `BROMUX_TEST_SSH_CHILD` | path to the test helper `mux_child` on the remote |
 | `BROMUX_TEST_SSH_ARGS` | optional extra ssh arguments |
 
-CI runs it on Linux against the runner itself over the real ssh (`.github/ci/ssh-localhost.sh`: a key generated for the job, accepted only from the loopback address, with forwarding and the pty refused).
+CI runs it on Linux and macOS against the runner itself over the real ssh (`.github/ci/ssh-localhost.sh`: a key generated for the job, accepted only from the loopback address, with forwarding and the pty refused).
 
 `BROMUX_ORACLE_STEPS=N` multiplies the churn, and `BROMUX_TEST_LOG=1` prints the server log.
 

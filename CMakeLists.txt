@@ -25,7 +25,9 @@ if(BROMUX_COVERAGE AND PROJECT_IS_TOP_LEVEL)
     if(MSVC)
         message(FATAL_ERROR "BROMUX_COVERAGE requires GCC or Clang (gcov instrumentation)")
     endif()
-    add_compile_options(--coverage -O0 -g)
+    # Atomic counters: the server loop, PTY readers and client threads hit the
+    # same lines, and racing plain counters give gcov negative hit counts.
+    add_compile_options(--coverage -fprofile-update=atomic -O0 -g)
     add_link_options(--coverage)
 endif()
 
