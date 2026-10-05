@@ -142,8 +142,14 @@ struct ServerSession final : bropty::TerminalHost {
         uint64_t request{0};
         ConnId conn{0};
         Clock::time_point at{};
+        std::string selection;
     };
     std::vector<ClipRequest> clip_requests;
+    // The attachment asked to answer an OSC 52 query: the most recently
+    // active one that may type (null: none may).
+    [[nodiscard]] Attachment* clipboard_answerer() const;
+    // Ask `a` to answer `r` (a fresh token, the clock restarted).
+    void ask_clipboard(ClipRequest& r, Attachment& a);
 
     [[nodiscard]] bropty::Terminal& t() noexcept { return term->terminal(); }
     [[nodiscard]] SessionInfo info() const;

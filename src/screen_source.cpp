@@ -64,8 +64,11 @@ void ScreenSource::request_rows(int64_t first, int64_t end) const {
     end = std::min(end, m_.screen_top_row());
     if (first >= end) return;
     const int64_t k = int64_t(kFetchRows);
+    const auto now = std::chrono::steady_clock::now();
     for (int64_t b = first - first % k; b < end; b += k) {
         if (inflight_blocks_.count(b)) continue;
+        auto r = refused_.find(b);
+        if (r != refused_.end() && now < r->second.retry_at) continue;
         const int64_t lo = std::max(b, first);
         const int64_t hi = std::min(b + k, end);
         // Held rows are consecutive keys: all of [lo, hi) is here when the
@@ -86,6 +89,7 @@ void ScreenSource::drop_history() {
     hist_.clear();
     inflight_.clear();  // their answers carry the old epoch and are dropped
     inflight_blocks_.clear();
+    refused_.clear();  // a new numbering: the server is asked afresh
     provisional_ = -1;
 }
 
@@ -123,6 +127,7 @@ void ScreenSource::history_arrived(uint32_t req, const HistoryChunk& chunk) {
     auto f = inflight_.find(req);
     if (f != inflight_.end()) {
         inflight_blocks_.erase(f->second);
+        refused_.erase(f->second);
         inflight_.erase(f);
     }
     if (chunk.epoch != m_.history_epoch()) return;
@@ -164,6 +169,10 @@ void ScreenSource::history_arrived(uint32_t req, const HistoryChunk& chunk) {
 void ScreenSource::history_failed(uint32_t req) {
     auto f = inflight_.find(req);
     if (f == inflight_.end()) return;
+    Refusal& r = refused_[f->second];
+    const int shift = std::min(r.count, 16);
+    r.count++;
+    r.retry_at = std::chrono::steady_clock::now() + std::min(kRetryDelay * (int64_t(1) << shift), kMaxRetryDelay);
     inflight_blocks_.erase(f->second);
     inflight_.erase(f);
 }

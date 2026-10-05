@@ -10,7 +10,9 @@
 #include <bromux/screen_source.h>
 #include <bropty/view.h>
 
+#include <chrono>
 #include <random>
+#include <thread>
 
 using namespace bromux;
 using bropty::RowPos;
@@ -231,7 +233,8 @@ void rows_arrive_later() {
     CHECK_EQ(mv.search().size(), size_t(10));
     CHECK(rounds > 1);  // it had to wait
 
-    // Refused: the block is asked for again by the next frame.
+    // Refused: the block is asked for again once a backoff has passed, not by
+    // every frame, and the backoff doubles with each refusal.
     Remote other(30, 6, 5000);
     other.feed(out);
     other.push();
@@ -245,8 +248,30 @@ void rows_arrive_later() {
     CHECK_EQ(other.src->requests_in_flight(), refused.size());
     for (const Remote::Req& q : refused) other.src->history_failed(q.id);
     CHECK_EQ(other.src->requests_in_flight(), size_t(0));
+    using namespace std::chrono_literals;
+    const auto first_delay = ScreenSource::kRetryDelay;
+    for (int i = 0; i < 20; ++i) (void)ov.snapshot();
+    CHECK(other.reqs.empty());
+    std::this_thread::sleep_for(first_delay + 50ms);
     (void)ov.snapshot();
     CHECK_EQ(other.reqs.size(), refused.size());
+    refused = std::move(other.reqs);
+    other.reqs.clear();
+    for (const Remote::Req& q : refused) other.src->history_failed(q.id);
+    std::this_thread::sleep_for(first_delay + 50ms);  // past the first delay, short of the doubled one
+    (void)ov.snapshot();
+    CHECK(other.reqs.empty());
+    std::this_thread::sleep_for(first_delay + 50ms);
+    (void)ov.snapshot();
+    CHECK_EQ(other.reqs.size(), refused.size());
+    // Answered at last: those rows are held and nothing more is asked.
+    other.answer();
+    CHECK_EQ(other.src->requests_in_flight(), size_t(0));
+    (void)ov.snapshot();
+    CHECK(other.reqs.empty());
+    ov.scroll_by(-1000);  // rows further back are new blocks, asked for at once
+    (void)ov.snapshot();
+    CHECK(!other.reqs.empty());
     // Not connected (the fetch cannot be sent): nothing is left waiting.
     refused = std::move(other.reqs);
     other.reqs.clear();

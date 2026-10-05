@@ -13,6 +13,10 @@
 // alternate screen tells them that. Screen rows carry the model's serials, so
 // a TerminalView re-reads only rows a frame rewrote.
 //
+// A refused block (history_failed) is not asked for again until a backoff
+// has passed, doubling with each refusal up to kMaxRetryDelay, so a view
+// left on rows the server will not send does not ask every frame.
+//
 // Single-threaded, like the ScreenModel it reads (and which must outlive it).
 
 #include "bromux/codec.h"
@@ -21,6 +25,7 @@
 
 #include <bropty/row_source.h>
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -54,6 +59,8 @@ public:
     using FetchFn = std::function<uint32_t(int64_t start, uint32_t count)>;
     static constexpr uint32_t kFetchRows = 256;          // rows per request (aligned blocks)
     static constexpr size_t kMaxCachedRows = 200000;     // history rows kept
+    static constexpr std::chrono::milliseconds kRetryDelay{200};      // after a first refusal
+    static constexpr std::chrono::milliseconds kMaxRetryDelay{10000};
 
     ScreenSource(const ScreenModel& model, FetchFn fetch);
 
@@ -98,6 +105,12 @@ private:
     // Requests out: id -> block start; blocks being fetched.
     mutable std::map<uint32_t, int64_t> inflight_;
     mutable std::set<int64_t> inflight_blocks_;
+    // Refused blocks: when each may be asked for again, and how often it was refused.
+    struct Refusal {
+        std::chrono::steady_clock::time_point retry_at{};
+        int count{0};
+    };
+    std::map<int64_t, Refusal> refused_;
     uint64_t changes_{1};
     bropty::Modes modes_;
     uint64_t epoch_{0};

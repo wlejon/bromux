@@ -24,6 +24,21 @@ void ServerCore::detach(Conn& c, uint64_t session, DetachReason reason, bool tel
     if (sit != sessions_.end()) {
         ServerSession& s = *sit->second;
         s.attachments.erase(std::remove(s.attachments.begin(), s.attachments.end(), a.get()), s.attachments.end());
+        // OSC 52 queries this client was asked to answer go to the next
+        // answerer, or are dropped (no reply) when no client may answer.
+        Attachment* next = s.clip_requests.empty() ? nullptr : s.clipboard_answerer();
+        auto& reqs = s.clip_requests;
+        for (auto r = reqs.begin(); r != reqs.end();) {
+            if (r->conn != c.id) {
+                ++r;
+            } else if (next) {
+                s.ask_clipboard(*r, *next);
+                ++r;
+            } else {
+                s.t().cancel_clipboard(r->request);
+                r = reqs.erase(r);
+            }
+        }
         apply_resize_policy(s);
         notify(NotifyKind::Changed, s);
     }

@@ -103,24 +103,35 @@ void ServerSession::clipboard_write(std::string_view selection, std::string_view
 // client that may type into the session is asked (ClipboardRequest), and its
 // ClipboardData reply answers the terminal's request (server_dispatch.cpp),
 // which writes the OSC 52 reply. Declined (false): no client may answer, and
-// the program gets no reply.
-bool ServerSession::clipboard_read_async(uint64_t request, std::string_view selection) {
-    if (clipboard_policy != ClipboardPolicy::ReadWrite) return false;
+// the program gets no reply. A client that detaches first hands its queries
+// on to the next answerer (ServerCore::detach).
+Attachment* ServerSession::clipboard_answerer() const {
     Attachment* best = nullptr;
     for (Attachment* a : attachments)
         if (!a->read_only() && (!best || a->activity > best->activity)) best = a;
-    if (!best) return false;
-    ClipRequest r;
+    return best;
+}
+
+void ServerSession::ask_clipboard(ClipRequest& r, Attachment& a) {
     r.token = core.next_token();
-    r.request = request;
-    r.conn = best->conn->id;
+    r.conn = a.conn->id;
     r.at = Clock::now();
     ClipboardRequestMsg m;
     m.session = id;
     m.token = r.token;
-    m.selection = selection.empty() ? std::string("s0") : std::string(selection);
-    clip_requests.push_back(r);
-    core.send(*best->conn, m);
+    m.selection = r.selection;
+    core.send(*a.conn, m);
+}
+
+bool ServerSession::clipboard_read_async(uint64_t request, std::string_view selection) {
+    if (clipboard_policy != ClipboardPolicy::ReadWrite) return false;
+    Attachment* best = clipboard_answerer();
+    if (!best) return false;
+    ClipRequest r;
+    r.request = request;
+    r.selection = selection.empty() ? std::string("s0") : std::string(selection);
+    ask_clipboard(r, *best);
+    clip_requests.push_back(std::move(r));
     return true;
 }
 

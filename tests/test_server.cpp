@@ -299,6 +299,29 @@ void test_clipboard() {
     int answers = 0;
     for (int y = 0; m && y < m->rows(); ++y) answers += m->row(y).text().find("GOT:") != std::string::npos;
     CHECK_EQ(answers, 2);
+
+    // The client asked detaches before answering: the query goes to the
+    // other client attached, whose answer reaches the program.
+    auto b = f.client("second");
+    if (!b || !attach(*b, id, 80, 24)) return;
+    uint32_t orphan = 0;
+    CHECK(ask("s", orphan, sel));  // c typed last: it is asked
+    c->detach(id);
+    std::vector<ClientEvent> bevs;
+    uint32_t moved = 0;
+    CHECK(fx::pump_until(*b, [&] {
+        for (const ClientEvent& e : bevs)
+            if (e.kind == ClientEvent::Kind::ClipboardRequest) {
+                moved = e.token;
+                sel = e.text;
+                return true;
+            }
+        return false;
+    }, 5s, &bevs));
+    CHECK(moved != 0 && moved != orphan);
+    CHECK_EQ(sel, std::string("c"));
+    b->answer_clipboard(id, moved, true, "moves!");
+    CHECK(wait_text(*b, id, "GOT:bW92ZXMh ST"));
 #endif
 }
 
