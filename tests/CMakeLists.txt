@@ -54,3 +54,16 @@ add_dependencies(test_daemon mux_child bromux_cli)
 # Remote attach over the real ssh: skipped unless BROMUX_TEST_SSH* name a
 # remote with bromux and mux_child built (see the file).
 bromux_test(test_remote TIMEOUT 1800)
+
+# Every test executable links no_dialogs.cpp (see the file). no_dialogs.h's
+# check::no_error_dialogs() does the same where a program calls it; this makes
+# it automatic for every executable here.
+if(WIN32)
+    get_property(_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(_t IN LISTS _test_targets)
+        get_target_property(_type ${_t} TYPE)
+        if(_type STREQUAL "EXECUTABLE")
+            target_sources(${_t} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/no_dialogs.cpp)
+        endif()
+    endforeach()
+endif()
