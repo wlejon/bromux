@@ -131,7 +131,10 @@ endif()
 
 # ---- the bromux executable: server, proxy and a small CLI ---------------------
 add_executable(bromux_cli tools/bromux.cpp tools/cli_attach.cpp tools/server_images.cpp)
-set_target_properties(bromux_cli PROPERTIES OUTPUT_NAME bromux)
+# ARCHIVE_OUTPUT_NAME: MSVC gives an executable that exports symbols (a
+# library it links may export some) an import library named after its
+# output, which would be bromux.lib beside the static library of that name.
+set_target_properties(bromux_cli PROPERTIES OUTPUT_NAME bromux ARCHIVE_OUTPUT_NAME bromux_cli)
 target_link_libraries(bromux_cli PRIVATE bromux)
 
 # Compressed inline images (kitty PNG, iTerm2's formats) are decoded by
