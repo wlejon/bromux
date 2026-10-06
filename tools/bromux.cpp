@@ -134,7 +134,8 @@ int cmd_server(Args& a) {
     }
     if (daemon && log_path.empty()) {
         std::string dir = runtime_dir();
-        if (!dir.empty()) log_path = dir + "/" + (name.empty() ? std::string(kDefaultServerName) : name) + ".log";
+        std::string sname = name.empty() ? std::string(kDefaultServerName) : name;
+        if (!dir.empty() && valid_server_name(sname)) log_path = dir + "/" + sname + ".log";
     }
 #if !defined(_WIN32)
     std::signal(SIGPIPE, SIG_IGN);
@@ -153,17 +154,32 @@ int cmd_server(Args& a) {
     auto log_mu = std::make_shared<std::mutex>();
     std::shared_ptr<std::FILE> log_file;
     if (!log_path.empty()) {
+#if !defined(_WIN32)
+        int fd = ::open(log_path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0600);
+        if (fd >= 0) {
+            log_file.reset(::fdopen(fd, "a"), [](std::FILE* f) {
+                if (f) std::fclose(f);
+            });
+        }
+#else
         log_file.reset(std::fopen(log_path.c_str(), "a"), [](std::FILE* f) {
             if (f) std::fclose(f);
         });
+#endif
     }
     std::FILE* sink = log_file ? log_file.get() : (daemon ? nullptr : stderr);
     if (sink) {
         opt.log = [sink, log_file, log_mu](std::string_view msg) {
             std::lock_guard<std::mutex> lk(*log_mu);
             std::time_t t = std::time(nullptr);
+            std::tm tm_buf{};
+#if defined(_WIN32)
+            localtime_s(&tm_buf, &t);
+#else
+            localtime_r(&t, &tm_buf);
+#endif
             char ts[32];
-            std::strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", std::localtime(&t));
+            std::strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", &tm_buf);
             std::fprintf(sink, "%s [%llu] %.*s\n", ts, (unsigned long long)current_pid(), int(msg.size()), msg.data());
             std::fflush(sink);
         };

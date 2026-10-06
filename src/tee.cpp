@@ -2,6 +2,11 @@
 
 #include <algorithm>
 #include <cstring>
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace bromux {
 
@@ -26,7 +31,13 @@ TeeWriter::~TeeWriter() { close(); }
 
 bool TeeWriter::open(const std::string& path, const TeeHeader& header) {
     close();
+#if !defined(_WIN32)
+    int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return false;
+    f_ = ::fdopen(fd, "wb");
+#else
     f_ = std::fopen(path.c_str(), "wb");
+#endif
     if (!f_) return false;
     std::string h(kMagic, sizeof kMagic);
     put16(h, uint32_t(header.cols));
