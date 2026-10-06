@@ -128,12 +128,24 @@ void ServerCore::pump_sessions() {
     budget.max_bytes = opt_.session_slice_bytes;
     budget.max_time = opt_.session_slice_time;
     budget.slice = kReadChunk;
+    const Clock::time_point now = Clock::now();
+    const uint64_t now_ms =
+        uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
     for (auto& [id, sp] : sessions_) {
         ServerSession& s = *sp;
         s.has_pending = false;
         if (!s.pty) continue;
         s.term->update(budget);
         s.has_pending = s.term->has_pending_output();
+        // Image animations run here, frames go out as the images change
+        // (extras_due); nothing is due when nothing animates.
+        if (now >= s.anim_due || s.t().images_version() != s.anim_seen) {
+            const uint64_t wait = s.t().advance_animations(now_ms);
+            s.anim_seen = s.t().images_version();
+            s.anim_due = wait == UINT64_MAX ? Clock::time_point::max()
+                                            : now + std::chrono::milliseconds(std::min<uint64_t>(wait, 60000));
+        }
+        s.poll_foreground(now, false);
         if (s.running && !s.has_pending && !s.pty->is_running() && s.pty->eof()) exited.push_back(&s);
     }
     for (auto& [id, sp] : sessions_) sp->tee.flush();
@@ -182,7 +194,7 @@ void ServerCore::flush_frames(Clock::time_point now) {
             flush_events(*a);
             const bool force = a->force_frame;
             if (!force) {
-                if (a->sent_version == s.feed_seq) continue;
+                if (a->sent_version == s.feed_seq && !extras_due(*a)) continue;
                 if (hold_sync) continue;
                 if (a->inflight_bytes >= opt_.frame_window_bytes) continue;  // an Ack re-opens it
                 if (loop_->pending_output(a->conn->id) >= opt_.frame_window_bytes) continue;
@@ -229,6 +241,10 @@ int ServerCore::next_timeout(Clock::time_point now) const {
         if (s->has_pending) return 0;
     Clock::time_point t = next_deadline_;
     if (idle_ && opt_.idle_exit.count() >= 0) t = std::min(t, idle_since_ + opt_.idle_exit);
+    for (auto& [id, s] : sessions_) {
+        t = std::min(t, s->anim_due);
+        if (s->fg_due != Clock::time_point{} && s->wants_foreground()) t = std::min(t, s->fg_due);
+    }
     // A safety net: PTY wakeups and I/O drive the loop, this only bounds a lost one.
     t = std::min(t, now + std::chrono::milliseconds(1000));
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t - now).count();

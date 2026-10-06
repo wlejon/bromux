@@ -23,6 +23,10 @@ void ScreenModel::reset() {
     title_.clear();
     icon_.clear();
     cwd_.clear();
+    pointer_.clear();
+    commands_.clear();
+    ++commands_version_;
+    images_.reset();
     palette_ = bropty::Palette::standard();
     history_rows_ = 0;
     history_first_ = 0;
@@ -130,19 +134,45 @@ bool ScreenModel::apply(const FrameMsg& frame, std::string* err, Effects* fx) {
         case Op_Text: {
             const uint8_t which = r.u8();
             std::string v = r.str();
-            if (!r.ok() || which > 2) return bad("bad text op");
+            if (!r.ok() || which > 3) return bad("bad text op");
             if (which == 0) {
                 title_ = std::move(v);
                 e.title = true;
             } else if (which == 1) {
                 icon_ = std::move(v);
                 e.icon_name = true;
-            } else {
+            } else if (which == 2) {
                 cwd_ = std::move(v);
                 e.cwd = true;
+            } else {
+                pointer_ = std::move(v);
+                e.pointer_shape = true;
             }
             break;
         }
+        case Op_Commands: {
+            const uint64_t drop = r.varint();
+            const uint64_t keep = r.varint();
+            const uint64_t n = r.varint_max(std::min<uint64_t>(r.remaining(), bropty::Terminal::kMaxCommands));
+            if (!r.ok()) return bad("bad commands op");
+            commands_.erase(commands_.begin(), commands_.begin() + ptrdiff_t(std::min<uint64_t>(drop, commands_.size())));
+            if (keep < commands_.size()) commands_.resize(size_t(keep));
+            for (uint64_t i = 0; i < n; ++i) {
+                bropty::CommandRecord c;
+                if (!read_command(r, c)) return bad("bad command record");
+                commands_.push_back(std::move(c));
+            }
+            if (commands_.size() > bropty::Terminal::kMaxCommands) return bad("too many command records");
+            ++commands_version_;
+            e.commands = true;
+            break;
+        }
+        case Op_Images:
+            if (!images_.apply_images(r)) return bad("bad images op");
+            break;
+        case Op_ImageData:
+            if (!images_.apply_data(r)) return bad("bad image data op");
+            break;
         case Op_Palette:
             if (!read_palette(r, palette_)) return bad("bad palette op");
             e.palette = true;
@@ -165,6 +195,7 @@ bool ScreenModel::apply(const FrameMsg& frame, std::string* err, Effects* fx) {
     }
     if (!r.ok()) return bad("truncated frame");
     if (cursor_.row >= rows() && rows() > 0) return bad("cursor outside the screen");
+    e.images = images_.finish();
     feed_seq_ = frame.feed_seq;
     frame_seq_ = frame.frame_seq;
     maybe_compact();

@@ -102,6 +102,7 @@ void daemonize(const std::string& log_path) {
 
 int cmd_server(Args& a) {
     ServerOptions opt;
+    opt.decode_image = image_decoder();
     std::string name;
     std::string log_path;
     bool daemon = false;

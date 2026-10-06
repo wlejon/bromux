@@ -183,6 +183,10 @@ bool ServerCore::send_frame(Attachment& a, Clock::time_point now) {
     text(1, t.icon_name(), a.sent_icon, !a.text_sent);
     text(2, t.cwd(), a.sent_cwd, !a.text_sent);
     a.text_sent = true;
+    if (a.minor1()) {
+        text(3, t.pointer_shape(), a.sent_pointer, !a.pointer_sent);
+        a.pointer_sent = true;
+    }
     if (!a.palette_sent || a.sent_palette != s.palette_hash) {
         w.u8(Op_Palette);
         write_palette(w, t.palette());
@@ -202,6 +206,10 @@ bool ServerCore::send_frame(Attachment& a, Clock::time_point now) {
         a.sent_history = hrows;
         a.sent_epoch = epoch;
         a.history_sent = true;
+    }
+    if (a.minor1()) {
+        write_commands(a, w);
+        write_images_ops(a, w);
     }
 
     a.sent_version = s.feed_seq;

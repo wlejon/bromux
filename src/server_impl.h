@@ -16,6 +16,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -68,6 +69,25 @@ struct Attachment {
     bool history_sent{false};
     uint64_t sent_version{UINT64_MAX};  // session feed_seq the last frame showed
 
+    // Minor 1 state (only for a connection that speaks it).
+    std::string sent_pointer;
+    bool pointer_sent{false};
+    std::vector<bropty::CommandRecord> sent_commands;
+    uint64_t sent_commands_version{UINT64_MAX};
+    // Images: what the last Op_Images showed, the frames' pixels it named
+    // (in order) and how much of each the client has been sent.
+    uint64_t sent_images_version{UINT64_MAX};
+    bool sent_images_alt{false};
+    int sent_image_cell_w{0};
+    int sent_image_cell_h{0};
+    std::vector<bropty::ImagePixelsPtr> image_frames;
+    std::unordered_map<uint64_t, size_t> image_sent;  // pixel serial -> bytes sent
+    size_t image_next{0};  // first entry of image_frames not yet complete
+
+    [[nodiscard]] bool minor1() const noexcept;
+    // Pixel data still to send.
+    [[nodiscard]] bool images_pending() const noexcept { return image_next < image_frames.size(); }
+
     // Flow control: frames sent but not yet acknowledged.
     uint64_t frame_seq{0};
     std::deque<std::pair<uint64_t, size_t>> inflight;
@@ -94,9 +114,12 @@ struct Conn {
     bool closing{false};
     std::string name;
     uint32_t flags{0};
+    uint16_t minor{0};  // the protocol minor the client's Hello said
     wire::MessageSplitter splitter;
     std::map<uint64_t, std::unique_ptr<Attachment>> attachments;  // by session id
 };
+
+inline bool Attachment::minor1() const noexcept { return conn->minor >= 1; }
 
 struct ServerSession final : bropty::TerminalHost {
     explicit ServerSession(ServerCore& core) : core(core) {}
@@ -151,12 +174,31 @@ struct ServerSession final : bropty::TerminalHost {
     // Ask `a` to answer `r` (a fresh token, the clock restarted).
     void ask_clipboard(ClipRequest& r, Attachment& a);
 
+    // Image animations (kitty a=a, animated GIFs): when the next frame is due.
+    Clock::time_point anim_due{Clock::time_point::max()};
+    uint64_t anim_seen{UINT64_MAX};  // images_version when animations were last run
+
+    // The foreground process (server_foreground.cpp), checked while a client
+    // that reads it (minor 1) is attached.
+    std::optional<bropty::ProcessInfo> fg;
+    bool fg_known{false};
+    bool fg_activity{false};  // input or output since the last check
+    uint64_t fg_seen_seq{0};  // feed_seq at the last check
+    int fg_trail{0};
+    Clock::time_point fg_due{};
+    Clock::time_point fg_last{};
+    // Check when due; queue a Foreground event on a change.
+    void poll_foreground(Clock::time_point now, bool force);
+    [[nodiscard]] bool wants_foreground() const;
+    [[nodiscard]] EventMsg foreground_event() const;
+
     [[nodiscard]] bropty::Terminal& t() noexcept { return term->terminal(); }
     [[nodiscard]] SessionInfo info() const;
     void resize(int cols, int rows);
     // Bring row_enc / row_key up to date with the terminal.
     void refresh();
-    void push_event(EventMsg ev);
+    // To every attachment (whose connection speaks at least `min_minor`).
+    void push_event(EventMsg ev, uint16_t min_minor = 0);
 
     // bropty::TerminalHost (Session's delegate)
     void bell() override;
@@ -165,7 +207,8 @@ struct ServerSession final : bropty::TerminalHost {
     void cwd_changed(std::string_view uri) override;
     void clipboard_write(std::string_view selection, std::string_view data) override;
     bool clipboard_read_async(uint64_t request, std::string_view selection) override;
-    void notification(std::string_view title, std::string_view body) override;
+    void notification_ex(const bropty::Notification& n) override;
+    bool decode_image(std::string_view data, const bropty::ImageLimits& limits, bropty::DecodedImage& out) override;
     void progress(int state, int value) override;
     void semantic_mark(char kind, std::string_view params) override;
     void apc(std::string_view payload) override;
@@ -218,6 +261,12 @@ public:
 
     // server_frames.cpp
     bool send_frame(Attachment& a, Clock::time_point now);
+    // Whether `a` has something to be sent besides a new feed_seq (images
+    // that changed or animate, pixels still owed).
+    bool extras_due(const Attachment& a);
+    // server_images.cpp: the minor-1 parts of a frame.
+    void write_commands(Attachment& a, wire::Writer& w);
+    void write_images_ops(Attachment& a, wire::Writer& w);
     void send_history(Conn& c, const FetchHistoryMsg& m);
     void flush_events(Attachment& a);
 

@@ -11,6 +11,7 @@
 // Single-threaded: owned by whoever calls Client::dispatch().
 
 #include "bromux/codec.h"
+#include "bromux/image_codec.h"
 #include "bromux/protocol.h"
 
 #include <bropty/terminal.h>
@@ -41,6 +42,15 @@ public:
     [[nodiscard]] const std::string& cwd() const noexcept { return cwd_; }
     [[nodiscard]] const bropty::Palette& palette() const noexcept { return palette_; }
     [[nodiscard]] bool alt_screen_active() const noexcept { return modes_.has(Mode_AltScreen); }
+    // ---- minor 1 (empty from an older server) ----
+    // The pointer shape the program asked for (OSC 22), "" for none.
+    [[nodiscard]] const std::string& pointer_shape() const noexcept { return pointer_; }
+    // The OSC 133 command records, oldest first, positions in absolute rows.
+    [[nodiscard]] const std::vector<bropty::CommandRecord>& commands() const noexcept { return commands_; }
+    // Changes whenever commands() does.
+    [[nodiscard]] uint64_t commands_version() const noexcept { return commands_version_; }
+    // The active screen's inline images.
+    [[nodiscard]] const ImageMirror& images() const noexcept { return images_; }
     // History (Op_History): absolute rows history_first_row() ..
     // screen_top_row() - 1; the screen's rows follow. Numbers hold while
     // history_epoch() stays the same (bropty::Terminal::row_numbering()).
@@ -73,6 +83,9 @@ public:
         bool palette{false};
         bool history{false};
         bool epoch{false};  // rows were renumbered (a resize's reflow)
+        bool pointer_shape{false};
+        bool commands{false};
+        bool images{false};  // what images() shows changed
         int rows_changed{0};
         int scrolled{0};  // net rows scrolled up
     };
@@ -99,6 +112,10 @@ private:
     std::string title_;
     std::string icon_;
     std::string cwd_;
+    std::string pointer_;
+    std::vector<bropty::CommandRecord> commands_;
+    uint64_t commands_version_{0};
+    ImageMirror images_;
     bropty::Palette palette_;
     uint64_t history_rows_{0};
     int64_t history_first_{0};

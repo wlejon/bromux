@@ -44,11 +44,12 @@ void ServerSession::resize(int cols, int rows) {
     term->resize(cols, rows);
 }
 
-void ServerSession::push_event(EventMsg ev) {
+void ServerSession::push_event(EventMsg ev, uint16_t min_minor) {
     ev.session = id;
     const bool bell = ev.kind == EventKind::Bell;
     std::string msg;
     for (Attachment* a : attachments) {
+        if (a->conn->minor < min_minor) continue;
         if (bell && a->last_event_bell && !a->events.empty()) continue;  // coalesce bell storms
         if (msg.empty()) msg = encode(ev);
         if (a->events.size() >= core.options().event_queue_limit || a->events_bytes + msg.size() > kMaxEventBytes) {
@@ -135,12 +136,23 @@ bool ServerSession::clipboard_read_async(uint64_t request, std::string_view sele
     return true;
 }
 
-void ServerSession::notification(std::string_view title, std::string_view body) {
+// OSC 9, OSC 777 and OSC 99: minor 1's fields ride at the end of the event,
+// where an older client does not read them.
+void ServerSession::notification_ex(const bropty::Notification& n) {
     EventMsg e;
     e.kind = EventKind::Notification;
-    e.a = std::string(title);
-    e.b = std::string(body);
+    e.a = n.title;
+    e.b = n.body;
+    e.x = n.urgency;
+    e.c = n.id;
+    e.d = n.source;
     push_event(std::move(e));
+}
+
+bool ServerSession::decode_image(std::string_view data, const bropty::ImageLimits& limits,
+                                 bropty::DecodedImage& out) {
+    const auto& decode = core.options().decode_image;
+    return decode && decode(data, limits, out);
 }
 
 void ServerSession::progress(int state, int value) {
@@ -255,6 +267,11 @@ void ServerCore::close_session(uint64_t id) {
 void ServerCore::session_exited(ServerSession& s) {
     s.running = false;
     s.exit_code = s.pty ? s.pty->exit_code().value_or(-1) : -1;
+    if (s.fg_known && s.fg) {
+        // Nothing owns the terminal any more.
+        s.fg.reset();
+        s.push_event(s.foreground_event(), 1);
+    }
     EventMsg e;
     e.kind = EventKind::Exited;
     e.x = s.exit_code;

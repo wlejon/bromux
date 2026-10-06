@@ -222,6 +222,15 @@ void PingMsg::read(wire::Reader& r) { req = r.u32(); }
 void KillServerMsg::write(wire::Writer&) const {}
 void KillServerMsg::read(wire::Reader&) {}
 
+void FeedMsg::write(wire::Writer& w) const {
+    w.u64(session);
+    w.str(bytes);
+}
+void FeedMsg::read(wire::Reader& r) {
+    session = r.u64();
+    bytes = r.str();
+}
+
 // ---- server -> client --------------------------------------------------------------
 
 void WelcomeMsg::write(wire::Writer& w) const {
@@ -313,6 +322,8 @@ void EventMsg::write(wire::Writer& w) const {
     w.svarint(y);
     w.str(a);
     w.str(b);
+    w.str(c);
+    w.str(d);
 }
 void EventMsg::read(wire::Reader& r) {
     session = r.u64();
@@ -321,6 +332,9 @@ void EventMsg::read(wire::Reader& r) {
     y = r.svarint();
     a = r.str();
     b = r.str();
+    // Minor 1's fields; an older server's event ends here.
+    if (!r.at_end()) c = r.str();
+    if (!r.at_end()) d = r.str();
 }
 
 void ClipboardRequestMsg::write(wire::Writer& w) const {
@@ -416,6 +430,7 @@ const char* msg_type_name(uint16_t type) noexcept {
     case MsgType::Sync: return "Sync";
     case MsgType::Ping: return "Ping";
     case MsgType::KillServer: return "KillServer";
+    case MsgType::Feed: return "Feed";
     case MsgType::Welcome: return "Welcome";
     case MsgType::Error: return "Error";
     case MsgType::Ok: return "Ok";

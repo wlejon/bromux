@@ -45,6 +45,15 @@ void Client::send_raw(uint64_t session, std::string_view bytes) {
     send(m);
 }
 
+bool Client::feed(uint64_t session, std::string_view bytes) {
+    if (server_minor() < 1) return false;
+    FeedMsg m;
+    m.session = session;
+    m.bytes = std::string(bytes);
+    send(m);
+    return true;
+}
+
 void Client::resize(uint64_t session, int cols, int rows, int cell_width, int cell_height) {
     auto clamp16 = [](int v) { return uint16_t(v < 0 ? 0 : v > 0xFFFF ? 0xFFFF : v); };
     ResizeMsg m;

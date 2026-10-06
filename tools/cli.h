@@ -3,6 +3,8 @@
 
 #include <bromux/client.h>
 
+#include <bropty/graphics.h>
+
 #include <cstdio>
 #include <functional>
 #include <memory>
@@ -46,5 +48,10 @@ bool parse_target(Args& a, Target& t, const std::function<bool(const std::string
 std::unique_ptr<Client> connect_target(const Target& t, bool autostart, std::string* err);
 
 int cmd_attach(Args& a);
+
+// The decoder for compressed inline images (server_images.cpp): broimage
+// when the build has it, else empty (such images are refused).
+using ImageDecoder = std::function<bool(std::string_view, const bropty::ImageLimits&, bropty::DecodedImage&)>;
+ImageDecoder image_decoder();
 
 }  // namespace bromux::cli

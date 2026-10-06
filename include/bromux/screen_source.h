@@ -80,6 +80,10 @@ public:
     [[nodiscard]] const bropty::Modes& modes() const noexcept override { return modes_; }
     [[nodiscard]] const bropty::Palette& palette() const noexcept override { return m_.palette(); }
     void request_rows(int64_t first, int64_t end) const override;
+    // The session's inline images (minor 1), as the model holds them.
+    [[nodiscard]] bropty::SourceImages source_images() const noexcept override {
+        return m_.images().source_images();
+    }
 
     // ---- fed by the Client
     // The model applied a frame.

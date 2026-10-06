@@ -22,7 +22,11 @@ namespace bromux {
 
 inline constexpr uint32_t kProtocolMagic = 0x584D5242;  // "BRMX" little endian
 inline constexpr uint16_t kProtocolMajor = 2;
-inline constexpr uint16_t kProtocolMinor = 0;
+// Minor 1 adds: the Feed message, the Foreground event, the Notification
+// event's id / source / urgency, and the frame ops for the pointer shape,
+// OSC 133 command records and inline images (codec.h). A server sends a
+// connection only what the minor in its Hello knows.
+inline constexpr uint16_t kProtocolMinor = 1;
 
 enum class MsgType : uint16_t {
     // client -> server
@@ -49,6 +53,7 @@ enum class MsgType : uint16_t {
     Sync = 0x0115,
     Ping = 0x0116,
     KillServer = 0x0117,
+    Feed = 0x0118,  // minor 1
     // server -> client
     Welcome = 0x0201,
     Error = 0x0202,
@@ -118,7 +123,9 @@ enum class NotifyKind : uint8_t { Added = 0, Changed = 1, Removed = 2 };
 // Events forwarded from a session's terminal. Fields used per kind:
 //   Bell                         -
 //   Title / IconName / Cwd       a = the new value
-//   Notification                 a = title, b = body
+//   Notification                 a = title, b = body; minor 1 adds x = urgency
+//                                (0 low, 1 normal, 2 critical, -1 not given), c = id (OSC 99 i=),
+//                                d = source ("osc9" / "osc777" / "osc99")
 //   Progress                     x = state, y = value
 //   SemanticMark (OSC 133)       x = kind ('A' 'B' 'C' 'D' ...), a = params
 //   ClipboardWrite (OSC 52)      a = selection, b = decoded data
@@ -126,6 +133,9 @@ enum class NotifyKind : uint8_t { Added = 0, Changed = 1, Removed = 2 };
 //   ResizedByApp (DECCOLM)       x = cols, y = rows
 //   Exited                       x = exit code (-1 unknown)
 //   EventsDropped                x = how many events a full queue dropped
+//   Foreground (minor 1)         x = pid (0: none), a = name, b = executable path,
+//                                c = command line: the process that owns the
+//                                terminal now (bropty IPtyProcess::foreground_process)
 enum class EventKind : uint8_t {
     Bell = 1,
     Title = 2,
@@ -139,6 +149,7 @@ enum class EventKind : uint8_t {
     ResizedByApp = 10,
     Exited = 11,
     EventsDropped = 12,
+    Foreground = 13,
 };
 
 using Pairs = std::vector<std::pair<std::string, std::string>>;
@@ -323,6 +334,13 @@ struct PingMsg {
 struct KillServerMsg {
     BROMUX_MSG(KillServer)
 };
+// Bytes into the session's terminal as if its program had written them
+// (escape sequences included); nothing reaches the program. Minor 1.
+struct FeedMsg {
+    uint64_t session{0};
+    std::string bytes;
+    BROMUX_MSG(Feed)
+};
 
 // server -> client
 struct WelcomeMsg {
@@ -379,6 +397,9 @@ struct EventMsg {
     int64_t y{0};
     std::string a;
     std::string b;
+    // Minor 1 (always written; absent from an older server's events).
+    std::string c;
+    std::string d;
     BROMUX_MSG(Event)
 };
 struct ClipboardRequestMsg {

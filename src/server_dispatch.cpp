@@ -13,6 +13,7 @@ namespace bromux::detail {
 namespace {
 constexpr size_t kMaxBlobBytes = 64u << 20;
 constexpr size_t kMaxRawInput = 1u << 20;
+constexpr size_t kMaxFeed = 16u << 20;
 }  // namespace
 
 void ServerCore::detach(Conn& c, uint64_t session, DetachReason reason, bool tell_client) {
@@ -83,6 +84,7 @@ void ServerCore::handle(Conn& c, uint16_t type, std::string_view payload) {
             return nullptr;
         }
         a->activity = next_activity();
+        a->session->fg_activity = true;  // the foreground may be about to change
         if (a->session->resize_policy == ResizePolicy::Latest) apply_resize_policy(*a->session);
         return a->session->pty ? a->session : nullptr;
     };
@@ -102,6 +104,7 @@ void ServerCore::handle(Conn& c, uint16_t type, std::string_view payload) {
         c.hello = true;
         c.name = m.client_name;
         c.flags = m.flags;
+        c.minor = m.minor;
         WelcomeMsg w;
         w.server_version = BROMUX_VERSION_STRING;
         w.pid = current_pid();
@@ -165,6 +168,10 @@ void ServerCore::handle(Conn& c, uint16_t type, std::string_view payload) {
             e.kind = EventKind::Exited;
             e.x = s->exit_code;
             send(c, e);
+        } else if (c.minor >= 1) {
+            // What owns the terminal now (checked at once if nobody asked yet).
+            if (s->fg_known) send(c, s->foreground_event());
+            else s->poll_foreground(Clock::now(), true);
         }
         return;
     }
@@ -368,6 +375,22 @@ void ServerCore::handle(Conn& c, uint16_t type, std::string_view payload) {
         log("kill-server requested by " + c.name);
         request_stop();
         return;
+    case MsgType::Feed: {
+        FeedMsg m;
+        if (!decode(payload, m) || m.bytes.size() > kMaxFeed) return bad();
+        Attachment* a = attachment_of(m.session);
+        if (!a) {
+            send_error(c, 0, ErrorCode::NotAttached, "feed for a session this client is not attached to");
+            return;
+        }
+        if (a->read_only()) {
+            send_error(c, 0, ErrorCode::ReadOnly, "feed on a read-only attachment");
+            return;
+        }
+        // Through the Session's tap: a new state version, recorded by the tee.
+        a->session->term->feed(m.bytes);
+        return;
+    }
     default:
         send_error(c, 0, ErrorCode::UnknownMessage, "unknown message type " + std::to_string(type));
         return;

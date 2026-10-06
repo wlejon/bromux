@@ -50,6 +50,8 @@ struct ConnectOptions {
     std::chrono::milliseconds timeout{10000};
     std::string client_name{"bromux-client"};
     bool watch_sessions{false};  // receive SessionNotify events
+    // The protocol minor this client says it speaks (tests pose as an older one).
+    uint16_t protocol_minor{kProtocolMinor};
 };
 
 struct SshTarget {
@@ -110,6 +112,9 @@ public:
 
     [[nodiscard]] bool connected() const;
     [[nodiscard]] const WelcomeMsg& server_info() const noexcept { return welcome_; }
+    // The protocol minor the server speaks: what it can send and accept
+    // (protocol.h: minor 1 adds Feed, foreground, commands, images ...).
+    [[nodiscard]] uint16_t server_minor() const noexcept { return welcome_.minor; }
 
     void set_wakeup(std::function<void()> fn);
     // Apply what has arrived; append the resulting events. Returns how many
@@ -135,6 +140,9 @@ public:
     void send_mouse(uint64_t session, const bropty::MouseEvent& ev);
     void focus(uint64_t session, bool focused);
     void send_raw(uint64_t session, std::string_view bytes);
+    // Bytes into the session's terminal as if its program wrote them
+    // (FeedMsg). False, and nothing sent, when the server predates it.
+    bool feed(uint64_t session, std::string_view bytes);
     void resize(uint64_t session, int cols, int rows, int cell_width = 0, int cell_height = 0);
     void detach(uint64_t session);
     void set_meta(uint64_t session, std::string_view key, std::string_view value);

@@ -13,6 +13,8 @@
 
 #include "bromux/protocol.h"
 
+#include <bropty/graphics.h>
+
 #include <chrono>
 #include <cstddef>
 #include <functional>
@@ -51,6 +53,19 @@ struct ServerOptions {
     std::string tee_dir;
     // Diagnostics sink (default: none).
     std::function<void(std::string_view)> log;
+    // Decodes compressed inline images for the sessions' terminals: PNG for
+    // kitty f=100, any format for iTerm2 (bropty TerminalHost::decode_image,
+    // whose contract it follows). Unset, those images are refused; raw RGB /
+    // RGBA, zlib-compressed kitty data and sixel need no decoder. Called on
+    // the server's thread.
+    std::function<bool(std::string_view data, const bropty::ImageLimits& limits, bropty::DecodedImage& out)>
+        decode_image;
+    // How often a session's foreground process (bropty
+    // IPtyProcess::foreground_process) is checked while clients that read it
+    // are attached: shortly after input or output, at most every
+    // foreground_gap, and every foreground_idle otherwise.
+    std::chrono::milliseconds foreground_gap{250};
+    std::chrono::milliseconds foreground_idle{3000};
 };
 
 class Server {

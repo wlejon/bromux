@@ -114,6 +114,7 @@ bool Client::start(std::unique_ptr<Stream> stream, const ConnectOptions& options
     HelloMsg h;
     h.client_name = options.client_name;
     h.flags = options.watch_sessions ? uint32_t(Hello_WatchSessions) : 0u;
+    h.minor = options.protocol_minor;
     send(h);
     const auto deadline = std::chrono::steady_clock::now() + timeout_;
     std::vector<ClientEvent> evs;

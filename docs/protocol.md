@@ -1,6 +1,8 @@
-# bromux wire protocol, version 2.0
+# bromux wire protocol, version 2.1
 
 Version 2 numbers scrollback rows absolutely (`Op_History`, `FetchHistory`, `History`); version 1 indexed them from the oldest row held, an index that shifted whenever rows were evicted.
+
+Minor 1 (2.1) carries what a local terminal has beyond the screen: `Feed` (bytes into a session's terminal as if its program wrote them), the `Foreground` event (the process that owns the terminal), the notification event's OSC 99 id, urgency and source, and frame ops for the OSC 22 pointer shape, OSC 133 command records and inline images. A server sends a connection only what the minor in its `Hello` knows: a 2.0 client gets 2.0 frames and events, and never sees the new ops, event kinds or messages. A 2.1 client of a 2.0 server reads `Welcome.minor` and does not send `Feed`.
 
 A client and a bromux server talk over one byte stream. Locally that is a Unix socket or a Windows named pipe. Remotely it is the stdio of `ssh host bromux proxy`, which relays bytes to the remote host's local server without reading them. The protocol is the same in every case, and nothing in it depends on the transport.
 
@@ -70,8 +72,9 @@ Messages that expect a reply carry a client-chosen `u32 req`, and the reply echo
 | 0x0115 | Sync | `u32 req, u64 session` | a Frame showing the current state, then SyncDone |
 | 0x0116 | Ping | `u32 req` | Pong |
 | 0x0117 | KillServer | (empty) | the server shuts down |
+| 0x0118 | Feed (2.1) | `u64 session, str bytes` (at most 16 MiB): into the session's terminal as if its program had written them; nothing reaches the program. Recorded by the tee like PTY output. | - |
 
-Input messages (Key through RawInput) on a read-only attachment get `Error(ReadOnly)`. Input for a session the connection has not attached gets `Error(NotAttached)`.
+Input messages (Key through RawInput, and Feed) on a read-only attachment get `Error(ReadOnly)`. Input for a session the connection has not attached gets `Error(NotAttached)`.
 
 ## Messages: server to client (0x02xx)
 
@@ -85,7 +88,7 @@ Input messages (Key through RawInput) on a read-only attachment get `Error(ReadO
 | 0x0206 | Attached | `u32 req, SessionInfo` |
 | 0x0207 | Detached | `u64 session, u8 reason` (0 requested, 1 session closed, 2 server shutdown) |
 | 0x0208 | Frame | `u64 session, u64 frame_seq, u64 feed_seq, str ops` |
-| 0x0209 | Event | `u64 session, u8 kind, svarint x, svarint y, str a, str b` |
+| 0x0209 | Event | `u64 session, u8 kind, svarint x, svarint y, str a, str b` (2.1 appends `str c, str d`) |
 | 0x020A | ClipboardRequest | `u64 session, u32 token, str selection` |
 | 0x020B | History | `u32 req, u64 session, u64 feed_seq, u64 first_row, u64 history_rows, u64 epoch, u64 start, strings rows` |
 | 0x020C | Blob | `u32 req, bool found, str data` |
@@ -154,7 +157,7 @@ Read-only and no-resize attachments, and attachments that have no size yet, neve
 | 2 | Title | a = the new value |
 | 3 | IconName | a = the new value |
 | 4 | Cwd | a = the new value (OSC 7) |
-| 5 | Notification | a = title, b = body (OSC 9 and OSC 777) |
+| 5 | Notification | a = title, b = body (OSC 9, OSC 777 and OSC 99); 2.1: x = urgency (0 low, 1 normal, 2 critical, -1 not given), c = OSC 99 id, d = source (`osc9`, `osc777`, `osc99`) |
 | 6 | Progress | x = state, y = value (OSC 9;4) |
 | 7 | SemanticMark | x = 'A' / 'B' / 'C' / 'D' / ..., a = params (OSC 133) |
 | 8 | ClipboardWrite | a = selection, b = decoded data (OSC 52) |
@@ -162,6 +165,9 @@ Read-only and no-resize attachments, and attachments that have no size yet, neve
 | 10 | ResizedByApp | x = cols, y = rows (DECCOLM) |
 | 11 | Exited | x = exit code (-1 unknown) |
 | 12 | EventsDropped | x = how many events were dropped |
+| 13 | Foreground (2.1) | x = pid (0: none), a = name, b = executable path, c = command line |
+
+`Foreground` is the process that owns the terminal now, as bropty's `IPtyProcess::foreground_process` answers (POSIX: the leader of the terminal's foreground process group; Windows: the youngest console program in the session's process tree, passing over background jobs). The server asks only while a 2.1 client is attached: at attach (the answer goes to that client at once), shortly after input or output, twice more as things settle (0.5 s and 1.5 s later), and every 3 s otherwise. A change goes to every 2.1 client; when the program exits, one with pid 0 follows.
 
 Each attachment has an event queue of at most 2048 events or 16 MiB. A full queue drops newer events and later reports how many with `EventsDropped`. Consecutive bells are coalesced.
 
@@ -190,11 +196,50 @@ The op stream is a sequence of `u8 op, body`, applied in order:
 | 3 | Row | `varint y, row` |
 | 4 | Cursor | `varint row, varint col, u8 flags` (1 visible, 2 pending wrap, 4 blink), `u8 shape` |
 | 5 | Modes | `varint mode bits, u8 mouse tracking, u8 mouse encoding, varint kitty keyboard flags` |
-| 6 | Text | `u8 which` (0 title, 1 icon name, 2 cwd), `str value` |
+| 6 | Text | `u8 which` (0 title, 1 icon name, 2 cwd; 2.1: 3 the OSC 22 pointer shape), `str value` |
 | 7 | Palette | 259 × (`u8 r, u8 g, u8 b`): colors 0-255, then foreground, background, cursor |
 | 8 | History | `varint first_row, varint rows, varint epoch`: the scrollback held, as absolute row numbers (below) |
+| 9 | Commands (2.1) | `varint drop_front, varint keep, varint n, command × n`: the OSC 133 command records (below) |
+| 10 | Images (2.1) | the active screen's inline images and placements, whole (below) |
+| 11 | ImageData (2.1) | `varint pixel_serial, varint offset, str bytes`: part of one image frame's RGBA (below) |
 
-Mode bits are listed in `codec.h` (`ModeBit`). The alternate screen is bit 24. A client that receives an op it does not know, or an op that does not validate, rejects the whole frame.
+Mode bits are listed in `codec.h` (`ModeBit`). The alternate screen is bit 24. A client that receives an op it does not know, or an op that does not validate, rejects the whole frame. That is why a server sends ops 9-11 and `Text` 3 only to clients whose `Hello` said minor 1 or later.
+
+### Command records (2.1)
+
+The terminal keeps the shell's commands from OSC 133 marks (bropty `Terminal::commands()`, at most 10000). `Op_Commands` brings a client's copy up to date: it drops its first `drop_front` records (those the terminal let go of), keeps the next `keep`, and appends the `n` that follow.
+
+```
+command := svarint prompt_row, varint prompt_col,
+           u8 flags (1 input, 2 output, 4 end, 8 exit code, 16 finished, 32 trimmed),
+           [svarint row, varint col] for each of input, output, end present,
+           [svarint exit_code], str command_line
+```
+
+Positions are absolute rows, numbered like the screen and scrollback (they change with the numbering epoch, and the records are then sent again). When the shell did not report a command line (`cmdline=`, OSC 633;E), the server fills in the text typed between the end of the prompt (B) and the start of the output (C), as the screen reads.
+
+### Inline images (2.1)
+
+A session's terminal holds kitty graphics images and placements, and sixel and iTerm2 images drawn into cells (bropty `graphics.h`). Image cells travel in rows like any other cell. `Op_Images` sends the active screen's images and placements whole, whenever they change (a transmission, a placement, a deletion, an animation frame, a screen switch, a new cell size):
+
+```
+Images    := varint cell_width, varint cell_height, u8 flags (1: cells may hold image placeholders),
+             varint n, image × n, varint m, placement × m
+image     := varint key, varint id, varint number, u8 source (0 kitty, 1 sixel, 2 iTerm2),
+             varint width, varint height,
+             varint nframes, (varint pixel_serial, varint gap_ms) × nframes, varint current_frame,
+             u32 cell_width, u32 cell_height (IEEE 754 float bits), varint box_cols, varint box_rows
+placement := varint image_key, varint image_id, varint placement_id,
+             svarint row (absolute), svarint col, svarint x_offset, svarint y_offset,
+             varint src_x, varint src_y, varint src_w, varint src_h,
+             svarint cols, svarint rows, svarint z, u8 virtual,
+             varint parent_image_key, varint parent_placement_id, varint parent_serial,
+             svarint parent_dx, svarint parent_dy, varint serial
+```
+
+Pixels go separately. A pixel serial names one frame's RGBA: `width × height × 4` bytes, 8-bit, not premultiplied. After an `Op_Images` the client holds the pixels of exactly the serials it lists (those it already had are kept, the rest dropped), and the server tracks the same set per client. It then sends each listed frame the client lacks in `Op_ImageData` chunks, in list order, at most 1 MiB per frame, so a large image takes several frames and never holds the screen back. Data for a serial the client does not hold is ignored. An image shows once its current frame's pixels are complete. Animations run on the server, and an animation step is an `Op_Images` naming another current frame, whose pixels the client already holds.
+
+The server decodes compressed images (kitty `f=100` PNG, iTerm2's formats) with `ServerOptions::decode_image`. The `bromux` executable sets it to broimage when its build found broimage; without one, those transmissions fail with kitty's error reply, and raw RGB/RGBA, zlib-compressed kitty data and sixel still work.
 
 ### Row encoding
 

@@ -72,6 +72,8 @@ set(BROMUX_SOURCES
     src/protocol.cpp
     src/protocol_input.cpp
     src/row_codec.cpp
+    src/command_codec.cpp
+    src/image_codec.cpp
     src/screen_model.cpp
     src/screen_source.cpp
     src/client.cpp
@@ -81,6 +83,8 @@ set(BROMUX_SOURCES
     src/server_session.cpp
     src/server_dispatch.cpp
     src/server_frames.cpp
+    src/server_images.cpp
+    src/server_foreground.cpp
     src/proxy.cpp
     src/paths_common.cpp
 )
@@ -126,9 +130,33 @@ else()
 endif()
 
 # ---- the bromux executable: server, proxy and a small CLI ---------------------
-add_executable(bromux_cli tools/bromux.cpp tools/cli_attach.cpp)
+add_executable(bromux_cli tools/bromux.cpp tools/cli_attach.cpp tools/server_images.cpp)
 set_target_properties(bromux_cli PROPERTIES OUTPUT_NAME bromux)
 target_link_libraries(bromux_cli PRIVATE bromux)
+
+# Compressed inline images (kitty PNG, iTerm2's formats) are decoded by
+# broimage when it is around: a superbuild's target (bro has one), else the
+# standalone repo beside this one (with its brotensor adapter off). Without
+# it the server still shows raw, zlib and sixel images and refuses the rest.
+option(BROMUX_WITH_BROIMAGE "Decode compressed inline images with broimage (when found)" ON)
+if(BROMUX_WITH_BROIMAGE AND NOT TARGET broimage)
+    set(BROIMAGE_DIR "${CMAKE_SOURCE_DIR}/../broimage" CACHE PATH "Path to the standalone broimage repo")
+    set(BROMATH_DIR "${CMAKE_SOURCE_DIR}/../bromath" CACHE PATH "Path to the standalone bromath repo")
+    if(EXISTS "${BROIMAGE_DIR}/CMakeLists.txt" AND EXISTS "${BROMATH_DIR}/CMakeLists.txt")
+        message(STATUS "bromux: broimage from ${BROIMAGE_DIR}")
+        # Decode only: no tensor adapter, no JIT kernels, no JavaScript API.
+        set(BROIMAGE_WITH_TENSOR OFF CACHE BOOL "" FORCE)
+        set(BROIMAGE_WITH_JIT OFF CACHE BOOL "" FORCE)
+        set(BROIMAGE_ENABLE_API OFF CACHE BOOL "" FORCE)
+        add_subdirectory("${BROIMAGE_DIR}" "${CMAKE_BINARY_DIR}/broimage" EXCLUDE_FROM_ALL)
+    endif()
+endif()
+if(BROMUX_WITH_BROIMAGE AND TARGET broimage)
+    target_link_libraries(bromux_cli PRIVATE broimage)
+    target_compile_definitions(bromux_cli PRIVATE BROMUX_HAVE_BROIMAGE=1)
+else()
+    message(STATUS "bromux: broimage not found; the server refuses compressed inline images")
+endif()
 if(WIN32)
     target_compile_definitions(bromux_cli PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 endif()

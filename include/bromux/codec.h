@@ -18,7 +18,9 @@
 //
 // The Frame op stream (FrameMsg::ops) is a sequence of
 //     u8 op, body
-// with the ops below. A client applies them in order to its ScreenModel.
+// with the ops below. A client applies them in order to its ScreenModel; an
+// op it does not know fails the frame, so a server sends the minor-1 ops
+// only to clients that said they know them.
 
 #include "bromux/wire.h"
 
@@ -48,7 +50,28 @@ enum FrameOp : uint8_t {
     // keeps its number while epoch stays the same; a resize (the reflow)
     // starts a new epoch.
     Op_History = 8,
+    // ---- minor 1 (sent only to clients whose Hello said minor >= 1) ----
+    // Op_Text gains which 3: the pointer shape the program asked for (OSC 22).
+    // varint drop_front, varint keep, varint n, command * n: the OSC 133
+    // command records (bropty Terminal::commands()). The client drops its
+    // first drop_front records, keeps the next `keep`, and appends these n.
+    Op_Commands = 9,
+    // The active screen's images and placements (image_codec.h), whole,
+    // whenever they change. Pixels travel separately, once per client.
+    Op_Images = 10,
+    // varint pixel serial, varint width, varint height, varint offset, str
+    // bytes: part of an image frame's RGBA (image_codec.h).
+    Op_ImageData = 11,
 };
+
+// One OSC 133 command record (Op_Commands):
+//     svarint prompt row, varint prompt col,
+//     u8 flags (1 input, 2 output, 4 end, 8 exit code, 16 finished, 32 trimmed),
+//     [svarint row, varint col] for each of input / output / end present,
+//     [svarint exit code], str command line
+void write_command(wire::Writer& w, const bropty::CommandRecord& c);
+bool read_command(wire::Reader& r, bropty::CommandRecord& c);
+[[nodiscard]] bool same_command(const bropty::CommandRecord& a, const bropty::CommandRecord& b) noexcept;
 
 enum ModeBit : uint64_t {
     Mode_Insert = 1ull << 0,

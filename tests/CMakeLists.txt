@@ -38,6 +38,8 @@ target_include_directories(mux_child PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 bromux_test(test_server ARGS $<TARGET_FILE:mux_child>)
 add_dependencies(test_server mux_child)
+bromux_test(test_minor1 ARGS $<TARGET_FILE:mux_child>)
+add_dependencies(test_minor1 mux_child)
 bromux_test(test_oracle ARGS $<TARGET_FILE:mux_child> TIMEOUT 1200)
 add_dependencies(test_oracle mux_child)
 
