@@ -313,6 +313,10 @@ void test_old_client() {
     uint64_t id = make(*newc, f.spec({"echo"}, kCols, kRows));
     if (!attach(*newc, id) || !attach(*oldc, id)) return;
     std::vector<ClientEvent> old_evs, new_evs;
+    // Feed only once the program is up: before that, conhost's first paint
+    // may still be on its way, and some builds (Windows Server 2022's) begin
+    // it by clearing the screen, which would erase what was fed.
+    CHECK(fx::pump_until(*newc, [&] { return fx::screen_has(newc->screen(id), "READY"); }, 10s, &new_evs));
     CHECK(newc->feed(id, "\x1b]22;wait\x07\x1b]133;A\x07$ " + kitty_image(3, 8, 8, 2, 1) + "\r\nOLDTEST"));
     CHECK(fx::pump_until(*newc, [&] {
         const ScreenModel* m = newc->screen(id);
