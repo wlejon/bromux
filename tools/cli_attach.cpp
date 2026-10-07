@@ -235,6 +235,7 @@ int cmd_attach(Args& a) {
     }).detach();
 
     std::string reason = "detached";
+    int exit_code = 0;
     bool full = true;
     std::vector<ClientEvent> evs;
     while (!*quit || c->screen(sid)) {
@@ -249,11 +250,13 @@ int cmd_attach(Args& a) {
                 reason = e.text;
                 done = true;
             }
-            if (e.kind == ClientEvent::Kind::Event && e.event.kind == EventKind::Exited)
+            if (e.kind == ClientEvent::Kind::Event && e.event.kind == EventKind::Exited) {
                 reason = "the program exited (" + std::to_string(e.event.x) + ")";
+                exit_code = static_cast<int>(e.event.x);
+                done = true;
+            }
             if (e.kind == ClientEvent::Kind::Event && e.event.kind == EventKind::Bell) host->write("\a");
         }
-        if (done) break;
         int nc = 0, nr = 0;
         host->size(nc, nr);
         if (nc != cols || nr != rows) {
@@ -268,12 +271,13 @@ int cmd_attach(Args& a) {
             m->clear_dirty();
             full = false;
         }
+        if (done) break;
     }
     *quit = true;
     host->restore();
     std::fprintf(stderr, "[bromux: %s]\n", reason.c_str());
     std::fflush(stderr);
-    std::_Exit(0);  // the keyboard thread may sit in a read; nothing left to clean up
+    std::_Exit(exit_code);  // the keyboard thread may sit in a read; nothing left to clean up
 }
 
 }  // namespace bromux::cli
