@@ -198,17 +198,86 @@ int cmd_attach(Args& a) {
         else return false;
         return true;
     };
-    if (!parse_target(a, t, extra) || a.failed() || id.empty()) {
-        std::fprintf(stderr, "usage: bromux attach [target] [--read-only] <session>\n");
+    if (!parse_target(a, t, extra) || a.failed()) {
+        std::fprintf(stderr, "usage: bromux attach [target] [--read-only] [session]\n");
         return 2;
     }
-    const uint64_t sid = std::strtoull(id.c_str(), nullptr, 10);
     std::string err;
-    std::shared_ptr<Client> c(connect_target(t, false, &err));
+    std::shared_ptr<Client> c(connect_target(t, true, &err));
     if (!c) {
         std::fprintf(stderr, "bromux: %s\n", err.c_str());
         return 1;
     }
+    auto list = c->list_sessions(&err);
+    if (!list) {
+        std::fprintf(stderr, "bromux: %s\n", err.c_str());
+        return 1;
+    }
+
+    auto get_name = [](const SessionInfo& s) -> std::string {
+        for (const auto& p : s.meta) {
+            if (p.first == "name") return p.second;
+        }
+        return {};
+    };
+
+    uint64_t sid = 0;
+    if (!id.empty()) {
+        char* end = nullptr;
+        unsigned long long num = std::strtoull(id.c_str(), &end, 10);
+        if (end != id.c_str() && *end == '\0') {
+            for (const auto& s : *list) {
+                if (s.id == num) {
+                    sid = s.id;
+                    break;
+                }
+            }
+            if (sid == 0) {
+                std::fprintf(stderr, "bromux: session %llu not found\n", num);
+                return 1;
+            }
+        } else {
+            for (const auto& s : *list) {
+                if (get_name(s) == id) {
+                    sid = s.id;
+                    break;
+                }
+            }
+            if (sid == 0) {
+                SessionSpec spec;
+                spec.meta.emplace_back("name", id);
+                spec.remove_on_exit = true;
+                auto info = c->create_session(spec, &err);
+                if (!info) {
+                    std::fprintf(stderr, "bromux: %s\n", err.c_str());
+                    return 1;
+                }
+                sid = info->id;
+            }
+        }
+    } else {
+        const SessionInfo* best = nullptr;
+        for (const auto& s : *list) {
+            if (!s.running) continue;
+            if (!best || s.created_ms > best->created_ms) {
+                best = &s;
+            }
+        }
+        if (best) {
+            sid = best->id;
+        } else {
+            SessionSpec spec;
+            spec.meta.emplace_back("name", "main");
+            spec.remove_on_exit = true;
+            auto info = c->create_session(spec, &err);
+            if (!info) {
+                std::fprintf(stderr, "bromux: %s\n", err.c_str());
+                return 1;
+            }
+            sid = info->id;
+        }
+    }
+
     auto host = std::make_shared<HostTerminal>();
     int cols = 0, rows = 0;
     host->size(cols, rows);

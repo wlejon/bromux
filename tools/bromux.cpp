@@ -53,8 +53,8 @@ int usage() {
                  "         [--clipboard deny|write|readwrite]\n"
                  "  proxy  [-L name|--socket addr]\n"
                  "  ls     [target]\n"
-                 "  new    [target] [--name N] [--cwd DIR] [--size COLSxROWS] [-- command args...]\n"
-                 "  attach [target] [--read-only] <session>\n"
+                 "  new    [target] [--name N] [--cwd DIR] [--rm] [--size COLSxROWS] [-- command args...]\n"
+                 "  attach [target] [--read-only] [session]\n"
                  "  kill   [target] <session>\n"
                  "  kill-server [target]\n"
                  "  version\n"
@@ -249,6 +249,7 @@ int cmd_new(Args& a) {
     auto extra = [&](const std::string& s) {
         if (s == "--name") spec.meta.emplace_back("name", a.value(s));
         else if (s == "--cwd") spec.cwd = a.value(s);
+        else if (s == "--rm" || s == "--remove-on-exit") spec.remove_on_exit = true;
         else if (s == "--size") {
             int c = 0, r = 0;
             if (std::sscanf(a.value(s).c_str(), "%dx%d", &c, &r) != 2 || c <= 0 || r <= 0) return false;
