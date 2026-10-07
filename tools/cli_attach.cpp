@@ -6,13 +6,19 @@
 #include "cli.h"
 
 #include <bropty/cell.h>
+#include <bropty/view.h>
+#include <bromux/screen_source.h>
 
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -51,12 +57,12 @@ public:
             tcsetattr(0, TCSANOW, &raw);
         }
 #endif
-        write("\x1b[?1049h\x1b[H\x1b[2J");
+        write("\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[H\x1b[2J");
     }
     ~HostTerminal() { restore(); }
     void restore() {
         if (restored_.exchange(true)) return;
-        write("\x1b[0m\x1b[?25h\x1b[?1049l");
+        write("\x1b[0m\x1b[?25h\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l");
 #if defined(_WIN32)
         SetConsoleMode(in_, in_mode_);
         SetConsoleMode(out_, out_mode_);
@@ -153,24 +159,37 @@ std::string sgr(const bropty::Style& s) {
     return out + "m";
 }
 
-void draw(const HostTerminal& host, const ScreenModel& m, bool full) {
+void draw(const HostTerminal& host, Client& client, uint64_t sid, bool full) {
+    ScreenModel* m = client.screen(sid);
+    if (!m) return;
+    bropty::TerminalView* view = client.view(sid);
+    if (!view) return;
+
     int hcols = 0, hrows = 0;
     host.size(hcols, hrows);
-    const int rows = std::min(m.rows(), hrows);
-    const int cols = std::min(m.cols(), hcols);
+    const int rows = std::min(m->rows(), hrows);
+    const int cols = std::min(m->cols(), hcols);
     std::string out = "\x1b[?25l";
+
+    const bool at_bottom = view->at_bottom();
+    const int64_t top = view->top_row();
+
+    if (!at_bottom) {
+        view->source().request_rows(top, std::min(top + rows, m->screen_top_row()));
+    }
+
     for (int y = 0; y < rows; ++y) {
-        if (!full && !m.row_dirty(y)) continue;
+        if (!full && at_bottom && !m->row_dirty(y)) continue;
         out += "\x1b[" + std::to_string(y + 1) + ";1H";
-        bropty::RowView row = m.row(y);
+        bropty::RowView row = at_bottom ? m->row(y) : view->source().row_at(top + y);
         uint32_t cur_style = UINT32_MAX;
         for (int x = 0; x < cols; ++x) {
-            const bropty::Cell& c = row[x];
+            const bropty::Cell& c = (x < row.cols) ? row[x] : bropty::Cell{};
             if (c.wide() == bropty::Wide::SpacerTail) continue;
             if (c.wide() == bropty::Wide::Lead && x + 1 >= cols) break;  // half a wide char does not fit
             if (c.style != cur_style) {
                 cur_style = c.style;
-                out += sgr(m.style(c.style));
+                out += sgr(m->style(c.style));
             }
             if (c.is_empty() || c.wide() == bropty::Wide::SpacerHead) {
                 out.push_back(' ');
@@ -180,10 +199,74 @@ void draw(const HostTerminal& host, const ScreenModel& m, bool full) {
         }
         out += "\x1b[0m\x1b[K";
     }
-    const bropty::CursorState& cur = m.cursor();
-    out += "\x1b[" + std::to_string(cur.row + 1) + ";" + std::to_string(cur.col + 1) + "H";
-    if (cur.visible) out += "\x1b[?25h";
+
+    if (!at_bottom) {
+        int64_t lines_above = m->screen_top_row() - top;
+        std::string tag = " [SCROLLBACK: " + std::to_string(lines_above) + " lines above | 'q' or type to exit] ";
+        if (cols > int(tag.size())) {
+            out += "\x1b[1;" + std::to_string(cols - int(tag.size()) + 1) + "H";
+            out += "\x1b[7;1m" + tag + "\x1b[0m";
+        }
+    } else {
+        const bropty::CursorState& cur = m->cursor();
+        out += "\x1b[" + std::to_string(cur.row + 1) + ";" + std::to_string(cur.col + 1) + "H";
+        if (cur.visible) out += "\x1b[?25h";
+    }
     host.write(out);
+}
+
+struct InputQueue {
+    std::mutex mu;
+    std::deque<std::string> queue;
+
+    void push(std::string s) {
+        std::lock_guard<std::mutex> lk(mu);
+        queue.push_back(std::move(s));
+    }
+
+    std::vector<std::string> drain() {
+        std::lock_guard<std::mutex> lk(mu);
+        std::vector<std::string> out(queue.begin(), queue.end());
+        queue.clear();
+        return out;
+    }
+};
+
+struct ParsedSgrMouse {
+    int button = 0;
+    int col = 0;
+    int row = 0;
+    char type = 0; // 'M' or 'm'
+    size_t length = 0;
+};
+
+bool parse_sgr_mouse(std::string_view s, ParsedSgrMouse& out) {
+    if (s.size() < 6 || !s.starts_with("\x1b[<")) return false;
+    size_t i = 3;
+    int b = 0, x = 0, y = 0;
+    while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
+        b = b * 10 + (s[i] - '0');
+        ++i;
+    }
+    if (i >= s.size() || s[i] != ';') return false;
+    ++i;
+    while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
+        x = x * 10 + (s[i] - '0');
+        ++i;
+    }
+    if (i >= s.size() || s[i] != ';') return false;
+    ++i;
+    while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
+        y = y * 10 + (s[i] - '0');
+        ++i;
+    }
+    if (i >= s.size() || (s[i] != 'M' && s[i] != 'm')) return false;
+    out.button = b;
+    out.col = x;
+    out.row = y;
+    out.type = s[i];
+    out.length = i + 1;
+    return true;
 }
 
 }  // namespace
@@ -287,20 +370,16 @@ int cmd_attach(Args& a) {
         return 1;
     }
     auto quit = std::make_shared<std::atomic<bool>>(false);
+    auto input_queue = std::make_shared<InputQueue>();
     // Keyboard -> session. Detached: a blocked console read must not hold up exit.
-    std::thread([c, host, quit, sid, read_only] {
+    std::thread([host, quit, input_queue] {
         char buf[4096];
         while (!*quit) {
             size_t n = host->read(buf, sizeof buf);
             if (n == 0) break;
-            std::string bytes(buf, n);
-            size_t k = bytes.find(kDetachKey);
-            if (k != std::string::npos) bytes.resize(k);
-            if (!bytes.empty() && !read_only) c->send_raw(sid, bytes);
-            if (k != std::string::npos) break;
+            input_queue->push(std::string(buf, n));
         }
         *quit = true;
-        c->detach(sid);
     }).detach();
 
     std::string reason = "detached";
@@ -308,7 +387,7 @@ int cmd_attach(Args& a) {
     bool full = true;
     std::vector<ClientEvent> evs;
     while (!*quit || c->screen(sid)) {
-        c->wait(std::chrono::milliseconds(50));
+        c->wait(std::chrono::milliseconds(20));
         evs.clear();
         c->dispatch(evs);
         bool done = false;
@@ -318,6 +397,9 @@ int cmd_attach(Args& a) {
             if (e.kind == ClientEvent::Kind::Disconnected) {
                 reason = e.text;
                 done = true;
+            }
+            if (e.kind == ClientEvent::Kind::History) {
+                full = true;
             }
             if (e.kind == ClientEvent::Kind::Event && e.event.kind == EventKind::Exited) {
                 reason = "the program exited (" + std::to_string(e.event.x) + ")";
@@ -335,14 +417,84 @@ int cmd_attach(Args& a) {
             host->write("\x1b[0m\x1b[H\x1b[2J");
             c->resize(sid, cols, rows);
         }
+
+        auto inputs = input_queue->drain();
+        for (const auto& raw : inputs) {
+            if (raw.find(kDetachKey) != std::string::npos) {
+                done = true;
+                break;
+            }
+
+            ParsedSgrMouse psm;
+            if (parse_sgr_mouse(raw, psm)) {
+                ScreenModel* sm = c->screen(sid);
+                bool tracking = sm && sm->modes().mouse_tracking != bropty::MouseTracking::None;
+                if (tracking) {
+                    bropty::MouseEvent ev;
+                    ev.col = std::max(0, psm.col - 1);
+                    ev.row = std::max(0, psm.row - 1);
+                    ev.action = (psm.type == 'M' ? bropty::MouseAction::Press : bropty::MouseAction::Release);
+                    int btn = psm.button & ~32;
+                    if (btn == 64) ev.button = bropty::MouseButton::WheelUp;
+                    else if (btn == 65) ev.button = bropty::MouseButton::WheelDown;
+                    else if (btn == 66) ev.button = bropty::MouseButton::WheelLeft;
+                    else if (btn == 67) ev.button = bropty::MouseButton::WheelRight;
+                    else if ((btn & 3) == 0) ev.button = bropty::MouseButton::Left;
+                    else if ((btn & 3) == 1) ev.button = bropty::MouseButton::Middle;
+                    else if ((btn & 3) == 2) ev.button = bropty::MouseButton::Right;
+                    else ev.button = bropty::MouseButton::None;
+                    if (psm.button & 32) ev.action = bropty::MouseAction::Motion;
+                    if (!read_only) c->send_mouse(sid, ev);
+                } else {
+                    int btn = psm.button & ~32;
+                    if (btn == 64) {
+                        if (auto* v = c->view(sid)) {
+                            v->scroll_by(-3);
+                            full = true;
+                        }
+                    } else if (btn == 65) {
+                        if (auto* v = c->view(sid)) {
+                            v->scroll_by(3);
+                            full = true;
+                        }
+                    }
+                }
+            } else if (raw == "\x1b[5~") {
+                if (auto* v = c->view(sid)) {
+                    v->scroll_by(-int64_t(rows));
+                    full = true;
+                }
+            } else if (raw == "\x1b[6~") {
+                if (auto* v = c->view(sid)) {
+                    v->scroll_by(int64_t(rows));
+                    full = true;
+                }
+            } else {
+                auto* v = c->view(sid);
+                if (v && !v->at_bottom()) {
+                    if (raw == "\x1b" || raw == "q" || raw == "Q") {
+                        v->scroll_to_bottom();
+                        full = true;
+                    } else {
+                        v->scroll_to_bottom();
+                        full = true;
+                        if (!read_only) c->send_raw(sid, raw);
+                    }
+                } else {
+                    if (!read_only) c->send_raw(sid, raw);
+                }
+            }
+        }
+
         if (ScreenModel* m = c->screen(sid)) {
-            draw(*host, *m, full);
+            draw(*host, *c, sid, full);
             m->clear_dirty();
             full = false;
         }
         if (done) break;
     }
     *quit = true;
+    c->detach(sid);
     host->restore();
     std::fprintf(stderr, "[bromux: %s]\n", reason.c_str());
     std::fflush(stderr);
