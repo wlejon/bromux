@@ -11,7 +11,8 @@ running, and reattaching restores the state.
 In the [Bro ecosystem](https://github.com/wlejon/bro/blob/main/docs/ecosystem.md),
 bromux provides session persistence and multiplexing for the `<terminal>`
 element and [broterm](https://github.com/wlejon/broterm). It builds on
-[bropty](https://github.com/wlejon/bropty) for terminal emulation and PTY
+brolink for its transport (framing, the local listener and streams, the ssh
+proxy), [bropty](https://github.com/wlejon/bropty) for terminal emulation and PTY
 management, and [brosearch](https://github.com/wlejon/brosearch) for regex
 search. Compressed inline images can optionally be decoded with
 [broimage](https://github.com/wlejon/broimage). bromux does not depend on bro or
@@ -51,11 +52,12 @@ Platform support is verified in continuous integration across GCC, Clang, and MS
 
 ### Dependencies
 
-bromux requires [bropty](https://github.com/wlejon/bropty) and, through it,
+bromux requires brolink (the local IPC and ssh transport, shared with
+broremote), [bropty](https://github.com/wlejon/bropty) and, through it,
 [brosearch](https://github.com/wlejon/brosearch). CMake resolves each sibling in this order:
 1. An existing target already defined in a parent superbuild (e.g. `bro`).
-2. Sibling checkouts beside the top-level project (`../bropty`, `../brosearch`, or `-DBROPTY_DIR=<path>` / `-DBROSEARCH_DIR=<path>`).
-3. Flat vendored submodules under `third_party/` (`third_party/bropty`, `third_party/brosearch`).
+2. Sibling checkouts beside the top-level project (`../brolink`, `../bropty`, `../brosearch`, or `-DBROLINK_DIR=<path>` / `-DBROPTY_DIR=<path>` / `-DBROSEARCH_DIR=<path>`).
+3. Flat vendored submodules under `third_party/` (`third_party/bropty`, `third_party/brosearch`; brolink has no submodule yet, so it must be a sibling checkout).
 
 Optionally, [broimage](https://github.com/wlejon/broimage) (with [bromath](https://github.com/wlejon/bromath)) can be provided at `../broimage` or via superbuild target to decode compressed Kitty and iTerm2 inline images.
 
@@ -94,6 +96,7 @@ Consumers embed bromux by including its directory and linking against `bromux::b
 my_project/
   third_party/
     bromux/
+    brolink/
     bropty/
     brosearch/
 ```
@@ -119,7 +122,7 @@ Configuration options:
 |--------|------|
 | `bromux/client.h` | `Client`, `ConnectOptions`, `SessionSpec`, `ClientEvent`, `ScreenModel` |
 | `bromux/server.h` | `Server`, `ServerConfig`, daemon lifecycle, session and client management |
-| `bromux/stream.h` | `IStream`, local Unix domain socket, Windows named pipe, and SSH proxy streams |
+| `bromux/stream.h` | `Stream`, local Unix domain socket, Windows named pipe, and SSH proxy streams (brolink's, under bromux's names) |
 | `bromux/screen_model.h`, `bromux/screen_source.h` | Client-side screen state and `bropty::RowSource` adapter for viewport, search, and selection |
 | `bromux/protocol.h`, `bromux/wire.h` | Wire protocol messages, framing, and serialization |
 | `bromux/tee.h` | Session input/output recording and verification replay |

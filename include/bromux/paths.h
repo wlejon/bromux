@@ -1,5 +1,6 @@
 #pragma once
-// Where a server listens, per user.
+// Where a server listens, per user (brolink/paths.h, under the app name
+// "bromux").
 //
 // POSIX: a Unix socket <dir>/<name>.sock, where <dir> is
 // $XDG_RUNTIME_DIR/bromux when that is set, else ${TMPDIR:-/tmp}/bromux-<uid>.
@@ -15,6 +16,8 @@
 //
 // $BROMUX_SOCKET, when set, overrides the address for the default name.
 
+#include <brolink/paths.h>
+
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -22,20 +25,21 @@
 namespace bromux {
 
 inline constexpr std::string_view kDefaultServerName = "default";
+inline constexpr std::string_view kAppName = "bromux";
 
 // Names are 1..64 of [A-Za-z0-9_.-].
-[[nodiscard]] bool valid_server_name(std::string_view name) noexcept;
+[[nodiscard]] inline bool valid_server_name(std::string_view name) noexcept { return brolink::valid_name(name); }
 
 // The endpoint of server `name` (empty = the default). Empty on failure
 // (`err` says why).
 [[nodiscard]] std::string server_address(std::string_view name, std::string* err = nullptr);
 
 // Per-user directory for server logs (created if missing).
-[[nodiscard]] std::string runtime_dir(std::string* err = nullptr);
+[[nodiscard]] inline std::string runtime_dir(std::string* err = nullptr) { return brolink::runtime_dir(kAppName, err); }
 
 // Absolute path of the running executable.
-[[nodiscard]] std::string current_executable();
-[[nodiscard]] uint64_t current_pid();
-[[nodiscard]] uint64_t unix_time_ms();
+using brolink::current_executable;
+using brolink::current_pid;
+using brolink::unix_time_ms;
 
 }  // namespace bromux

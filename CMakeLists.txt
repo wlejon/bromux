@@ -32,13 +32,14 @@ if(BROMUX_COVERAGE AND PROJECT_IS_TOP_LEVEL)
 endif()
 
 # ---- siblings ------------------------------------------------------------------
-# bropty (the terminal substrate) and, through it, brosearch. Each resolves
-# like bro's siblings: an existing target (a superbuild already added it)
-# wins; otherwise the standalone repo beside the top-level project
-# (../<name>, overridable with -D<NAME>_DIR=<path>); otherwise the
-# third_party/<name> submodule of the top-level project. The fallback is flat:
-# a consumer vendoring bromux carries bropty and brosearch side by side in its
-# own third_party/. brosearch goes first, so bropty finds its target.
+# brolink (the transport), bropty (the terminal substrate) and, through it,
+# brosearch. Each resolves like bro's siblings: an existing target (a
+# superbuild already added it) wins; otherwise the standalone repo beside the
+# top-level project (../<name>, overridable with -D<NAME>_DIR=<path>);
+# otherwise the third_party/<name> submodule of the top-level project. The
+# fallback is flat: a consumer vendoring bromux carries brolink, bropty and
+# brosearch side by side in its own third_party/. brosearch goes first, so
+# bropty finds its target.
 function(bromux_sibling name what)
     if(TARGET ${name})
         return()
@@ -60,6 +61,8 @@ function(bromux_sibling name what)
     endif()
 endfunction()
 
+set(BROLINK_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+bromux_sibling(brolink "the local IPC and ssh transport")
 set(BROSEARCH_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(BROSEARCH_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 bromux_sibling(brosearch "bropty's regex scrollback search")
@@ -88,21 +91,8 @@ set(BROMUX_SOURCES
     src/proxy.cpp
     src/paths_common.cpp
 )
-if(WIN32)
-    list(APPEND BROMUX_SOURCES
-        src/win/paths_win.cpp
-        src/win/stream_win.cpp
-        src/win/spawn_win.cpp
-        src/win/loop_win.cpp
-    )
-else()
-    list(APPEND BROMUX_SOURCES
-        src/posix/paths_posix.cpp
-        src/posix/stream_posix.cpp
-        src/posix/spawn_posix.cpp
-        src/posix/loop_posix.cpp
-    )
-endif()
+# The transport (framing, the local listener and streams, spawning, the
+# proxy relay) is brolink's.
 
 add_library(bromux STATIC ${BROMUX_SOURCES})
 add_library(bromux::bromux ALIAS bromux)
@@ -117,10 +107,9 @@ target_include_directories(bromux
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
-target_link_libraries(bromux PUBLIC bropty)
+target_link_libraries(bromux PUBLIC brolink bropty)
 target_compile_definitions(bromux PRIVATE BROMUX_VERSION_STRING="${PROJECT_VERSION}")
 if(WIN32)
-    target_link_libraries(bromux PRIVATE advapi32)
     target_compile_definitions(bromux PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 endif()
 if(MSVC)
