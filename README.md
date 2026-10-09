@@ -10,7 +10,7 @@ running, and reattaching restores the state.
 
 In the [Bro ecosystem](https://github.com/wlejon/bro/blob/main/docs/ecosystem.md),
 bromux provides session persistence and multiplexing for the `<terminal>`
-element and [broterm](https://github.com/wlejon/broterm). It builds on
+element and helmterm ([helmapps](https://github.com/wlejon/helmapps)). It builds on
 brolink for its transport (framing, the local listener and streams, the ssh
 proxy), [bropty](https://github.com/wlejon/bropty) for terminal emulation and PTY
 management, and [brosearch](https://github.com/wlejon/brosearch) for regex
