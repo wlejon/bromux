@@ -206,7 +206,17 @@ void Client::set_wakeup(std::function<void()> fn) {
 
 bool Client::wait(std::chrono::milliseconds timeout) {
     std::unique_lock<std::mutex> lk(mu_);
-    return cv_.wait_for(lk, timeout, [this] { return !inbox_.empty() || eof_; });
+    const bool woken = cv_.wait_for(lk, timeout, [this] { return !inbox_.empty() || eof_ || poked_; });
+    poked_ = false;
+    return woken;
+}
+
+void Client::poke() {
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        poked_ = true;
+    }
+    cv_.notify_all();
 }
 
 ScreenModel* Client::screen(uint64_t session) {

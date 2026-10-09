@@ -372,12 +372,15 @@ int cmd_attach(Args& a) {
     auto quit = std::make_shared<std::atomic<bool>>(false);
     auto input_queue = std::make_shared<InputQueue>();
     // Keyboard -> session. Detached: a blocked console read must not hold up exit.
-    std::thread([host, quit, input_queue] {
+    // The main loop is woken for each read, so a key goes to the session at
+    // once rather than at the loop's next timeout.
+    std::thread([host, quit, input_queue, c] {
         char buf[4096];
         while (!*quit) {
             size_t n = host->read(buf, sizeof buf);
             if (n == 0) break;
             input_queue->push(std::string(buf, n));
+            c->poke();
         }
         *quit = true;
     }).detach();
@@ -385,6 +388,8 @@ int cmd_attach(Args& a) {
     std::string reason = "detached";
     int exit_code = 0;
     bool full = true;
+    bropty::CursorState drawn_cursor;
+    drawn_cursor.row = -1;  // nothing drawn yet
     std::vector<ClientEvent> evs;
     while (!*quit || c->screen(sid)) {
         c->wait(std::chrono::milliseconds(20));
@@ -486,8 +491,20 @@ int cmd_attach(Args& a) {
             }
         }
 
+        // Drawn when something changed: an idle session writes nothing (a
+        // host terminal would otherwise repaint at the loop's rate).
         if (ScreenModel* m = c->screen(sid)) {
-            draw(*host, *c, sid, full);
+            // (Scrolled back, rows come in from history as they arrive.)
+            bropty::TerminalView* v = c->view(sid);
+            bool changed = full || (v && !v->at_bottom());
+            for (int y = 0; !changed && y < m->rows(); ++y) changed = m->row_dirty(y);
+            const bropty::CursorState& cur = m->cursor();
+            if (cur.row != drawn_cursor.row || cur.col != drawn_cursor.col || cur.visible != drawn_cursor.visible)
+                changed = true;
+            if (changed) {
+                draw(*host, *c, sid, full);
+                drawn_cursor = cur;
+            }
             m->clear_dirty();
             full = false;
         }

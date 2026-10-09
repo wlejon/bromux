@@ -120,8 +120,12 @@ public:
     // Apply what has arrived; append the resulting events. Returns how many
     // events were appended.
     size_t dispatch(std::vector<ClientEvent>& out);
-    // Wait until something arrives (or the connection ends). False on timeout.
+    // Wait until something arrives (or the connection ends, or poke() is
+    // called). False on timeout.
     bool wait(std::chrono::milliseconds timeout);
+    // Ends a wait() now (or the next one, if none is waiting): another
+    // thread has work for the waiting one, such as keyboard input.
+    void poke();
 
     // The model of an attached session, or null.
     [[nodiscard]] ScreenModel* screen(uint64_t session);
@@ -195,6 +199,7 @@ private:
     std::condition_variable cv_;
     std::deque<std::pair<uint16_t, std::string>> inbox_;
     bool eof_{false};
+    bool poked_{false};
     std::string eof_reason_;
     std::function<void()> wakeup_;
     std::mutex write_mu_;
