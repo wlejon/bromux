@@ -35,7 +35,7 @@ endif()
 # brolink (the transport), bropty (the terminal substrate) and, through it,
 # brosearch. Each resolves through cmake/bro_deps.cmake: an existing target (a
 # superbuild already added it) wins; otherwise the ../<name> working tree
-# beside the top-level project; otherwise the pinned commit, fetched at
+# beside the top-level project; otherwise the head of its main, fetched at
 # configure. brosearch goes first, so bropty finds its target.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
 bro_dependency(brolink GITHUB wlejon/brolink OPTIONS BROLINK_BUILD_TESTS=OFF)
@@ -102,7 +102,7 @@ target_link_libraries(bromux_cli PRIVATE bromux)
 
 # Compressed inline images (kitty PNG, iTerm2's formats) are decoded by
 # broimage: a superbuild's target (bro has one), else the ../broimage working
-# tree, else the pinned commit (with its brotensor adapter off). With
+# tree, else the head of its main (with its brotensor adapter off). With
 # BROMUX_WITH_BROIMAGE=OFF the server still shows raw, zlib and sixel images
 # and refuses the rest.
 option(BROMUX_WITH_BROIMAGE "Decode compressed inline images with broimage" ON)

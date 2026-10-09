@@ -61,7 +61,7 @@ pin in `CMakeLists.txt`, resolved through `cmake/bro_deps.cmake` in this order:
 1. An existing target already defined in a parent superbuild (e.g. `bro`).
 2. A working tree beside the top-level project (`../brolink`, `../bropty`, ...), or
    `-DFETCHCONTENT_SOURCE_DIR_<NAME>=<path>`.
-3. The pinned commit, fetched from GitHub at configure.
+3. The head of its main branch, fetched from GitHub at configure.
 
 ### Standalone build
 
@@ -86,7 +86,7 @@ The build produces:
 
 ### Embedding in a CMake project
 
-Consumers embed bromux by adding its directory (bro-ecosystem projects pin it with
+Consumers embed bromux by adding its directory (bro-ecosystem projects declare it with
 `bro_dependency(bromux ...)`) and linking against `bromux::bromux`; bromux brings its own
 dependencies unless the consumer already added them:
 

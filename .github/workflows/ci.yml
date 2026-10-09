@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 # bromux's siblings (brolink, bropty, brosearch, and broimage with bromath for
-# inline images) come from the commits CMakeLists.txt pins
+# inline images) come from the heads of their main branches
 # (cmake/bro_deps.cmake), fetched at configure, so every job builds a plain
 # clone: what a fresh `git clone` gets.
 #

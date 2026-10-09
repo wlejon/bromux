@@ -1,8 +1,8 @@
 version: 2
 
-# No package manifest to watch. The siblings are bro_dependency() pins in
-# CMakeLists.txt, moved deliberately (bro's scripts/bump-deps.sh) when bromux
-# needs a newer one; a ../<name> working tree wins locally. That leaves the
+# No package manifest to watch. The siblings are bro_dependency() calls in
+# CMakeLists.txt that track each sibling's main; a ../<name> working tree wins
+# locally. That leaves the
 # pinned actions in .github/workflows/.
 updates:
   - package-ecosystem: github-actions

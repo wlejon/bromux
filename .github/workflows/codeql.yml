@@ -29,7 +29,7 @@ jobs:
       actions: read
 
     steps:
-      # The siblings are fetched at configure from the pinned commits.
+      # The siblings are fetched at configure from the heads of their main branches.
       - uses: actions/checkout@v7
         with:
           path: bromux
