@@ -1,11 +1,9 @@
 version: 2
 
-# No package manifest to watch. The siblings (bropty, brosearch) resolve from
-# ../<name> first, and CI checks them out from main, so they are always
-# current there. The third_party/ submodules are only the fallback for builds
-# without the sibling layout, and their pins are moved by hand, deliberately,
-# when bromux needs a newer sibling. That leaves the pinned actions in
-# .github/workflows/.
+# No package manifest to watch. The siblings are bro_dependency() pins in
+# CMakeLists.txt, moved deliberately (bro's scripts/bump-deps.sh) when bromux
+# needs a newer one; a ../<name> working tree wins locally. That leaves the
+# pinned actions in .github/workflows/.
 updates:
   - package-ecosystem: github-actions
     directory: /

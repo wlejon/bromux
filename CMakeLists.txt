@@ -33,41 +33,15 @@ endif()
 
 # ---- siblings ------------------------------------------------------------------
 # brolink (the transport), bropty (the terminal substrate) and, through it,
-# brosearch. Each resolves like bro's siblings: an existing target (a
-# superbuild already added it) wins; otherwise the standalone repo beside the
-# top-level project (../<name>, overridable with -D<NAME>_DIR=<path>);
-# otherwise the third_party/<name> submodule of the top-level project. The
-# fallback is flat: a consumer vendoring bromux carries brolink, bropty and
-# brosearch side by side in its own third_party/. brosearch goes first, so
-# bropty finds its target.
-function(bromux_sibling name what)
-    if(TARGET ${name})
-        return()
-    endif()
-    string(TOUPPER "${name}" _upper)
-    set(${_upper}_DIR "${CMAKE_SOURCE_DIR}/../${name}" CACHE PATH
-        "Path to the standalone ${name} repo (set to a missing path to force the submodule)")
-    if(EXISTS "${${_upper}_DIR}/CMakeLists.txt")
-        message(STATUS "bromux: ${name} from ${${_upper}_DIR}")
-        add_subdirectory("${${_upper}_DIR}" "${CMAKE_BINARY_DIR}/${name}" EXCLUDE_FROM_ALL)
-    elseif(EXISTS "${CMAKE_SOURCE_DIR}/third_party/${name}/CMakeLists.txt")
-        message(STATUS "bromux: ${name} from ${CMAKE_SOURCE_DIR}/third_party/${name} (submodule)")
-        add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/${name}" "${CMAKE_BINARY_DIR}/${name}" EXCLUDE_FROM_ALL)
-    else()
-        message(FATAL_ERROR
-            "bromux needs ${name} (${what}): not found at ${${_upper}_DIR} or "
-            "${CMAKE_SOURCE_DIR}/third_party/${name}. Clone https://github.com/wlejon/${name} next "
-            "to this repo, run `git submodule update --init --recursive`, or pass -D${_upper}_DIR=<path>.")
-    endif()
-endfunction()
-
-set(BROLINK_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-bromux_sibling(brolink "the local IPC and ssh transport")
-set(BROSEARCH_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(BROSEARCH_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-bromux_sibling(brosearch "bropty's regex scrollback search")
-set(BROPTY_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-bromux_sibling(bropty "the PTY and the terminal emulator")
+# brosearch. Each resolves through cmake/bro_deps.cmake: an existing target (a
+# superbuild already added it) wins; otherwise the ../<name> working tree
+# beside the top-level project; otherwise the pinned commit, fetched at
+# configure. brosearch goes first, so bropty finds its target.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
+bro_dependency(brolink GITHUB wlejon/brolink REF b393d00256a47445b594fad06779fb546d7e0f65 OPTIONS BROLINK_BUILD_TESTS=OFF)
+bro_dependency(brosearch GITHUB wlejon/brosearch REF e408e853181e353e086d547b6d1d3e9cc1c0167f
+               OPTIONS BROSEARCH_BUILD_TESTS=OFF BROSEARCH_BUILD_TOOLS=OFF)
+bro_dependency(bropty GITHUB wlejon/bropty REF 978186bba7f670e39c7c5dce7b4d5e4b690f1727 OPTIONS BROPTY_BUILD_TESTS=OFF)
 
 # ---- library -------------------------------------------------------------------
 set(BROMUX_SOURCES
@@ -127,21 +101,16 @@ set_target_properties(bromux_cli PROPERTIES OUTPUT_NAME bromux ARCHIVE_OUTPUT_NA
 target_link_libraries(bromux_cli PRIVATE bromux)
 
 # Compressed inline images (kitty PNG, iTerm2's formats) are decoded by
-# broimage when it is around: a superbuild's target (bro has one), else the
-# standalone repo beside this one (with its brotensor adapter off). Without
-# it the server still shows raw, zlib and sixel images and refuses the rest.
-option(BROMUX_WITH_BROIMAGE "Decode compressed inline images with broimage (when found)" ON)
+# broimage: a superbuild's target (bro has one), else the ../broimage working
+# tree, else the pinned commit (with its brotensor adapter off). With
+# BROMUX_WITH_BROIMAGE=OFF the server still shows raw, zlib and sixel images
+# and refuses the rest.
+option(BROMUX_WITH_BROIMAGE "Decode compressed inline images with broimage" ON)
 if(BROMUX_WITH_BROIMAGE AND NOT TARGET broimage)
-    set(BROIMAGE_DIR "${CMAKE_SOURCE_DIR}/../broimage" CACHE PATH "Path to the standalone broimage repo")
-    set(BROMATH_DIR "${CMAKE_SOURCE_DIR}/../bromath" CACHE PATH "Path to the standalone bromath repo")
-    if(EXISTS "${BROIMAGE_DIR}/CMakeLists.txt" AND EXISTS "${BROMATH_DIR}/CMakeLists.txt")
-        message(STATUS "bromux: broimage from ${BROIMAGE_DIR}")
-        # Decode only: no tensor adapter, no JIT kernels, no JavaScript API.
-        set(BROIMAGE_WITH_TENSOR OFF CACHE BOOL "" FORCE)
-        set(BROIMAGE_WITH_JIT OFF CACHE BOOL "" FORCE)
-        set(BROIMAGE_ENABLE_API OFF CACHE BOOL "" FORCE)
-        add_subdirectory("${BROIMAGE_DIR}" "${CMAKE_BINARY_DIR}/broimage" EXCLUDE_FROM_ALL)
-    endif()
+    bro_dependency(bromath GITHUB wlejon/bromath REF 8b511fbd69c014bf0584d2b42e6c96a8cf720f6a)
+    # Decode only: no tensor adapter, no JIT kernels, no JavaScript API.
+    bro_dependency(broimage GITHUB wlejon/broimage REF 9346cd5e97cb2fba0bae15e9f15fc0d9e37349ee
+                   OPTIONS BROIMAGE_WITH_TENSOR=OFF BROIMAGE_WITH_JIT=OFF BROIMAGE_ENABLE_API=OFF)
 endif()
 if(BROMUX_WITH_BROIMAGE AND TARGET broimage)
     target_link_libraries(bromux_cli PRIVATE broimage)

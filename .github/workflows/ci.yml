@@ -10,22 +10,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# bromux resolves its siblings from ../<name> first (see the bromux_sibling()
-# block in CMakeLists.txt), so the test jobs reconstruct that layout in the
-# runner workspace before configuring:
-#
-#     $GITHUB_WORKSPACE/
-#       bromux/      <- this repo, checked out into a named path, not the root
-#       bropty/      <- the PTY and the terminal emulator
-#       brosearch/   <- bropty's regex scrollback search
-#
-# Hence `path:` on the checkouts and `cmake -S bromux`. The siblings are taken
-# from main, which mirrors how the stack is developed (everything tracks
-# main), so this CI also catches a breaking change landing in one of them.
-#
-# The `submodule` job builds the other way, from the flat third_party/
-# submodules with no sibling beside it, so the fallback a consumer without the
-# sibling layout relies on cannot rot.
+# bromux's siblings (brolink, bropty, brosearch, and broimage with bromath for
+# inline images) come from the commits CMakeLists.txt pins
+# (cmake/bro_deps.cmake), fetched at configure, so every job builds a plain
+# clone: what a fresh `git clone` gets.
 #
 # test_remote attaches over the real ssh. On Linux and macOS
 # .github/ci/ssh-localhost.sh points it at the runner itself: a key generated
@@ -53,16 +41,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: bromux
-
-      - uses: actions/checkout@v7
-        with:
-          repository: wlejon/bropty
-          path: bropty
-
-      - uses: actions/checkout@v7
-        with:
-          repository: wlejon/brosearch
-          path: brosearch
 
       - name: Install Ninja (Linux)
         if: runner.os == 'Linux'
@@ -107,37 +85,6 @@ jobs:
             grep -hiE '\bskip(ped)?\b' build/Testing/Temporary/LastTest*.log || echo none
             echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
 
-  # ── Submodule fallback ────────────────────────────────────────────────────
-  #
-  # No sibling checkouts: bropty and brosearch come from the flat third_party/
-  # submodules at the commits this repo pins. The configure step checks both
-  # really took that path.
-  submodule:
-    name: Submodule fallback · ubuntu-24.04
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          path: bromux
-          submodules: recursive
-
-      - name: Install Ninja
-        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ninja-build
-
-      - name: Configure
-        run: |
-          test ! -e bropty && test ! -e brosearch
-          cmake -S bromux -B build -G Ninja -DCMAKE_BUILD_TYPE=Release | tee configure.log
-          for s in brosearch bropty; do
-            grep -q "bromux: $s from .*third_party/$s (submodule)" configure.log
-          done
-
-      - name: Build
-        run: cmake --build build --parallel 4
-
-      - name: Test
-        run: ctest --test-dir build --output-on-failure -j 1
-
   # ── Coverage ──────────────────────────────────────────────────────────────
   #
   # Scoped to bromux's own src/, include/ and tools/: the siblings are
@@ -151,16 +98,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: bromux
-
-      - uses: actions/checkout@v7
-        with:
-          repository: wlejon/bropty
-          path: bropty
-
-      - uses: actions/checkout@v7
-        with:
-          repository: wlejon/brosearch
-          path: brosearch
 
       - name: Install gcovr + Ninja
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends gcovr ninja-build

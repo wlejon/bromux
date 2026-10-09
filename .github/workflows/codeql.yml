@@ -29,19 +29,10 @@ jobs:
       actions: read
 
     steps:
+      # The siblings are fetched at configure from the pinned commits.
       - uses: actions/checkout@v7
         with:
           path: bromux
-
-      - uses: actions/checkout@v7
-        with:
-          repository: wlejon/bropty
-          path: bropty
-
-      - uses: actions/checkout@v7
-        with:
-          repository: wlejon/brosearch
-          path: brosearch
 
       - name: Install Ninja
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ninja-build
@@ -52,14 +43,14 @@ jobs:
       - name: Configure
         run: cmake -S bromux -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBROMUX_BUILD_TESTS=OFF
 
-      # bropty and brosearch are siblings with their own CodeQL workflows.
-      # Building them here, ahead of `init`, keeps them out of this analysis:
-      # for a compiled language CodeQL analyses what it observes the compiler
-      # compile while tracing, and `paths-ignore` does not filter compiled
-      # sources. Extracting them here would double-report every finding
-      # against the wrong repo.
+      # brolink, bropty, brosearch and broimage are siblings with their own
+      # CodeQL workflows. Building them here, ahead of `init`, keeps them out of
+      # this analysis: for a compiled language CodeQL analyses what it observes
+      # the compiler compile while tracing, and `paths-ignore` does not filter
+      # compiled sources. Extracting them here would double-report every
+      # finding against the wrong repo.
       - name: Pre-build sibling code (outside the traced build)
-        run: cmake --build build --parallel 4 --target bropty brosearch
+        run: cmake --build build --parallel 4 --target brolink bropty brosearch broimage
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4

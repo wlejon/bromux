@@ -54,24 +54,20 @@ Platform support is verified in continuous integration across GCC, Clang, and MS
 
 bromux requires brolink (the local IPC and ssh transport, shared with
 broremote), [bropty](https://github.com/wlejon/bropty) and, through it,
-[brosearch](https://github.com/wlejon/brosearch). CMake resolves each sibling in this order:
+[brosearch](https://github.com/wlejon/brosearch), plus [broimage](https://github.com/wlejon/broimage)
+(with [bromath](https://github.com/wlejon/bromath)) to decode compressed Kitty and iTerm2 inline
+images (`BROMUX_WITH_BROIMAGE`). There are no submodules; each dependency is a `bro_dependency()`
+pin in `CMakeLists.txt`, resolved through `cmake/bro_deps.cmake` in this order:
 1. An existing target already defined in a parent superbuild (e.g. `bro`).
-2. Sibling checkouts beside the top-level project (`../brolink`, `../bropty`, `../brosearch`, or `-DBROLINK_DIR=<path>` / `-DBROPTY_DIR=<path>` / `-DBROSEARCH_DIR=<path>`).
-3. Flat vendored submodules under `third_party/` (`third_party/bropty`, `third_party/brosearch`; brolink has no submodule yet, so it must be a sibling checkout).
-
-Optionally, [broimage](https://github.com/wlejon/broimage) (with [bromath](https://github.com/wlejon/bromath)) can be provided at `../broimage` or via superbuild target to decode compressed Kitty and iTerm2 inline images.
+2. A working tree beside the top-level project (`../brolink`, `../bropty`, ...), or
+   `-DFETCHCONTENT_SOURCE_DIR_<NAME>=<path>`.
+3. The pinned commit, fetched from GitHub at configure.
 
 ### Standalone build
 
 ```bash
-# Sibling layout (clone side by side):
-git clone https://github.com/wlejon/brosearch
-git clone https://github.com/wlejon/bropty
 git clone https://github.com/wlejon/bromux
-
-# Or single checkout with flat submodules:
-git clone https://github.com/wlejon/bromux
-cd bromux && git submodule update --init --recursive
+cd bromux
 
 # Linux / macOS (Ninja)
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -90,28 +86,19 @@ The build produces:
 
 ### Embedding in a CMake project
 
-Consumers embed bromux by including its directory and linking against `bromux::bromux`:
-
-```
-my_project/
-  third_party/
-    bromux/
-    brolink/
-    bropty/
-    brosearch/
-```
-
-In your `CMakeLists.txt`:
+Consumers embed bromux by adding its directory (bro-ecosystem projects pin it with
+`bro_dependency(bromux ...)`) and linking against `bromux::bromux`; bromux brings its own
+dependencies unless the consumer already added them:
 
 ```cmake
-add_subdirectory(third_party/bromux)
+add_subdirectory(path/to/bromux)
 
 target_link_libraries(my_terminal PRIVATE bromux::bromux)
 ```
 
 Configuration options:
 - `BROMUX_BUILD_TESTS`: Build the test suite (default `ON` when top-level, `OFF` when embedded via `add_subdirectory`).
-- `BROMUX_WITH_BROIMAGE`: Decode compressed inline images via broimage if found (default `ON`).
+- `BROMUX_WITH_BROIMAGE`: Decode compressed inline images via broimage (default `ON`).
 - `BROMUX_COVERAGE`: Build with gcov coverage instrumentation on GCC/Clang (default `OFF`).
 
 ## API overview
