@@ -1,6 +1,8 @@
 // Client: requests (fire-and-forget and blocking request / reply helpers).
 #include "bromux/client.h"
 
+#include <algorithm>
+
 namespace bromux {
 
 void Client::send_key(uint64_t session, const bropty::KeyEvent& ev) {
@@ -157,7 +159,13 @@ std::optional<SessionInfo> Client::attach(uint64_t session, int cols, int rows, 
         if (err) *err = "unexpected reply";
         return std::nullopt;
     }
-    if (!sync(session, err)) return std::nullopt;
+    if (!sync(session, err)) {
+        const bool closed = std::any_of(held_.begin(), held_.end(), [&](const ClientEvent& e) {
+            return e.kind == ClientEvent::Kind::Detached && e.session == session;
+        });
+        if (!closed) return std::nullopt;
+        if (err) err->clear();
+    }
     return std::move(a.info);
 }
 

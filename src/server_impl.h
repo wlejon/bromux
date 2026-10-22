@@ -261,6 +261,7 @@ public:
 
     // server_frames.cpp
     bool send_frame(Attachment& a, Clock::time_point now);
+    void complete_sync(Attachment& a);
     // Whether `a` has something to be sent besides a new feed_seq (images
     // that changed or animate, pixels still owed).
     bool extras_due(const Attachment& a);

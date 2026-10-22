@@ -42,7 +42,12 @@ void ServerCore::detach(Conn& c, uint64_t session, DetachReason reason, bool tel
         }
         apply_resize_policy(s);
         notify(NotifyKind::Changed, s);
+        if (!c.closing && !a->sync_reqs.empty()) {
+            send_frame(*a, Clock::now());
+            complete_sync(*a);
+        }
     }
+    complete_sync(*a);
     if (tell_client && !c.closing) {
         flush_events(*a);
         DetachedMsg d;
@@ -153,7 +158,8 @@ void ServerCore::handle(Conn& c, uint16_t type, std::string_view payload) {
         a->cols = m.cols;
         a->rows = m.rows;
         a->activity = next_activity();
-        s->attachments.push_back(a.get());
+        Attachment* a_ptr = a.get();
+        s->attachments.push_back(a_ptr);
         c.attachments.emplace(m.session, std::move(a));
         apply_resize_policy(*s);
         AttachedMsg r;
@@ -162,7 +168,8 @@ void ServerCore::handle(Conn& c, uint16_t type, std::string_view payload) {
         send(c, r);
         notify(NotifyKind::Changed, *s);
         if (!s->running) {
-            // Tell a late client the program already ended.
+            // Send the final screen before telling a late client the program ended.
+            send_frame(*a_ptr, Clock::now());
             EventMsg e;
             e.session = s->id;
             e.kind = EventKind::Exited;

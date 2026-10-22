@@ -173,9 +173,9 @@ void ServerCore::flush_frames(Clock::time_point now) {
         ServerSession& s = *sp;
         if (s.attachments.empty()) continue;
         // Synchronized output (?2026): hold frames until the program ends the
-        // update, at most sync_output_timeout.
+        // update, at most sync_output_timeout (only while the program runs).
         bool hold_sync = false;
-        if (s.t().modes().synchronized_output) {
+        if (s.running && s.t().modes().synchronized_output) {
             if (!s.sync_active) {
                 s.sync_active = true;
                 s.sync_since = now;
@@ -191,6 +191,10 @@ void ServerCore::flush_frames(Clock::time_point now) {
         }
         for (Attachment* a : s.attachments) {
             if (a->conn->closing) continue;
+            if (!s.running && (a->force_frame || a->sent_version != s.feed_seq || extras_due(*a))) {
+                send_frame(*a, now);
+                complete_sync(*a);
+            }
             flush_events(*a);
             const bool force = a->force_frame;
             if (!force) {
@@ -206,17 +210,7 @@ void ServerCore::flush_frames(Clock::time_point now) {
                 }
             }
             send_frame(*a, now);
-            if (force) {
-                a->force_frame = false;
-                for (uint32_t req : a->sync_reqs) {
-                    SyncDoneMsg d;
-                    d.req = req;
-                    d.session = s.id;
-                    d.feed_seq = s.feed_seq;
-                    send(*a->conn, d);
-                }
-                a->sync_reqs.clear();
-            }
+            if (force) complete_sync(*a);
         }
     }
 }

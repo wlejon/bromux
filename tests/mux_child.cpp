@@ -254,5 +254,12 @@ int main(int argc, char** argv) {
         out("bye\r\n");
         return int(arg(2, 0));
     }
+    if (mode == "syncexit") {
+        setup_console(false);
+        out("STEP1\r\n");
+        std::this_thread::sleep_for(std::chrono::milliseconds(arg(2, 20)));
+        out("\x1b[?2026hFINAL_SYNC_LINE\r\n");
+        return int(arg(3, 0));
+    }
     return 2;
 }

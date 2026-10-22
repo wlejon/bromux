@@ -592,6 +592,45 @@ void test_exit() {
             if (i.id == id2) return false;
         return true;
     }, 10s));
+
+    // Screen completeness at the moment EventKind::Exited arrives, even when
+    // the program exits within min_frame_interval and with ?2026 active.
+    uint64_t id3 = make(*c, f.spec({"syncexit", "20", "0"}));
+    if (attach(*c, id3, 80, 24)) {
+        std::vector<ClientEvent> evs3;
+        bool screen_complete_on_exit = false;
+        const bool got_exit = fx::pump_until(*c, [&] {
+            for (const ClientEvent& e : evs3)
+                if (e.kind == ClientEvent::Kind::Event && e.session == id3 && e.event.kind == EventKind::Exited) {
+                    screen_complete_on_exit = fx::screen_has(c->screen(id3), "FINAL_SYNC_LINE");
+                    return true;
+                }
+            return false;
+        }, 10s, &evs3);
+        CHECK(got_exit);
+        CHECK(screen_complete_on_exit);
+        CHECK(c->close_session(id3));
+    }
+
+    // Fast remove_on_exit sessions racing with Client::attach() and Client::sync().
+    for (int i = 0; i < 4; ++i) {
+        SessionSpec sfast = f.spec({"exit", "0"});
+        sfast.remove_on_exit = true;
+        uint64_t fid = make(*c, sfast);
+        std::string err;
+        auto ar = c->attach(fid, 80, 24, true, &err);
+        CHECK_MSG(ar.has_value() || err.find("no such session") != std::string::npos, err);
+    }
+    SessionSpec ssync = f.spec({"syncexit", "15", "0"});
+    ssync.remove_on_exit = true;
+    uint64_t sid = make(*c, ssync);
+    std::string serr;
+    auto sar = c->attach(sid, 80, 24, true, &serr);
+    CHECK_MSG(sar.has_value(), serr);
+    for (int i = 0; i < 10; ++i) {
+        std::this_thread::sleep_for(5ms);
+        (void)c->sync(sid);
+    }
 }
 
 void test_protocol_errors() {

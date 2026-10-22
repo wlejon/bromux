@@ -266,11 +266,23 @@ void ServerCore::close_session(uint64_t id) {
 
 void ServerCore::session_exited(ServerSession& s) {
     s.running = false;
+    s.sync_active = false;
     s.exit_code = s.pty ? s.pty->exit_code().value_or(-1) : -1;
     if (s.fg_known && s.fg) {
         // Nothing owns the terminal any more.
         s.fg.reset();
         s.push_event(s.foreground_event(), 1);
+    }
+    // Deliver what the program printed last (and any events before exit)
+    // before EventKind::Exited so the screen is complete when Exited arrives.
+    const auto now = Clock::now();
+    for (Attachment* a : s.attachments) {
+        if (a->conn->closing) continue;
+        flush_events(*a);
+        if (a->force_frame || a->sent_version != s.feed_seq || extras_due(*a) || s.spec.remove_on_exit) {
+            send_frame(*a, now);
+        }
+        complete_sync(*a);
     }
     EventMsg e;
     e.kind = EventKind::Exited;
@@ -279,12 +291,7 @@ void ServerCore::session_exited(ServerSession& s) {
     log("session " + std::to_string(s.id) + " exited with " + std::to_string(s.exit_code));
     notify(NotifyKind::Changed, s);
     if (s.spec.remove_on_exit) {
-        // Deliver what the program printed last before the session goes.
-        const auto now = Clock::now();
-        for (Attachment* a : s.attachments) {
-            flush_events(*a);
-            send_frame(*a, now);
-        }
+        for (Attachment* a : s.attachments) flush_events(*a);
         close_session(s.id);
     }
 }

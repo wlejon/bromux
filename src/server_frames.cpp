@@ -227,6 +227,23 @@ bool ServerCore::send_frame(Attachment& a, Clock::time_point now) {
     return true;
 }
 
+void ServerCore::complete_sync(Attachment& a) {
+    a.force_frame = false;
+    if (a.sync_reqs.empty()) return;
+    if (!a.conn->closing) {
+        const uint64_t sid = a.session ? a.session->id : 0;
+        const uint64_t fseq = a.session ? a.session->feed_seq : a.sent_version;
+        for (uint32_t req : a.sync_reqs) {
+            SyncDoneMsg d;
+            d.req = req;
+            d.session = sid;
+            d.feed_seq = fseq;
+            send(*a.conn, d);
+        }
+    }
+    a.sync_reqs.clear();
+}
+
 void ServerCore::flush_events(Attachment& a) {
     if (a.conn->closing) return;
     // A client that stopped reading keeps its events queued (and bounded).
