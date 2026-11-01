@@ -80,7 +80,6 @@ void shift_rows(std::vector<uint64_t>& rows, int k) {
 // next change to any row take a stamp not seen here.
 void ServerSession::refresh() {
     if (enc_version == feed_seq) return;
-    static const bool full_always = std::getenv("BROMUX_FULL_REFRESH") != nullptr;
     bropty::Terminal& term_ref = t();
     const int cols = term_ref.cols();
     const int rows = term_ref.rows();
@@ -96,18 +95,16 @@ void ServerSession::refresh() {
         const uint64_t st = term_ref.row_stamp(y);
         stamps[i] = st;
         size_t from = SIZE_MAX;
-        if (!full_always) {
-            if (i < row_stamp.size() && row_stamp[i] == st) {
-                from = i;
-            } else {
-                if (!indexed) {
-                    was.reserve(row_stamp.size() * 2);
-                    for (size_t j = 0; j < row_stamp.size(); ++j) was.emplace(row_stamp[j], j);
-                    indexed = true;
-                }
-                auto it = was.find(st);
-                if (it != was.end()) from = it->second;
+        if (i < row_stamp.size() && row_stamp[i] == st) {
+            from = i;
+        } else {
+            if (!indexed) {
+                was.reserve(row_stamp.size() * 2);
+                for (size_t j = 0; j < row_stamp.size(); ++j) was.emplace(row_stamp[j], j);
+                indexed = true;
             }
+            auto it = was.find(st);
+            if (it != was.end()) from = it->second;
         }
         if (from == i)
             enc[i] = std::move(row_enc[i]);  // stamps are unique on a screen: nothing else maps here
